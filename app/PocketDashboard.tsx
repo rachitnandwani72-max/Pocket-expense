@@ -23,16 +23,17 @@ type Expense = {
 };
 
 type Theme = "light" | "dark";
-type AppView = "home" | "transactions" | "reports";
+type AppView = "home" | "transactions" | "reports" | "settings";
 
 type PocketBackup = {
   app: "Pocket";
-  version: 1;
+  version: 1 | 2 | 3;
   exportedAt: string;
   data: {
     expenses: Expense[];
     targets: Record<string, number>;
     openingBalances?: Record<string, number>;
+    savingsTargets?: Record<string, number>;
     ownerName: string;
     targetAlertsEnabled: boolean;
     theme: Theme;
@@ -54,10 +55,14 @@ const categoryNames = new Set<Category>(categories.map((item) => item.name));
 const expenseStorageKey = "pocket-expenses-v3";
 const targetStorageKey = "pocket-budgets-v3";
 const openingBalanceStorageKey = "pocket-opening-balances-v1";
+const savingsTargetStorageKey = "pocket-savings-targets-v1";
 const monthlyPlanMigrationKey = "pocket-monthly-plan-v1-migrated";
 const targetAlertsStorageKey = "pocket-target-alerts";
 const ownerNameStorageKey = "pocket-owner-name";
+const ownerNameBrandMigrationKey = "pocket-owner-name-brand-v1";
 const lastBackupStorageKey = "pocket-last-backup";
+const defaultOwnerName = "Pocket";
+const legacyDefaultOwnerNames = new Set(["rachit", "ratchet"]);
 
 const money = new Intl.NumberFormat("en-IN", {
   style: "currency",
@@ -199,6 +204,23 @@ function loadSavedOpeningBalances() {
   return migrated;
 }
 
+function loadSavedSavingsTargets() {
+  const saved: Record<string, number> = {};
+  try {
+    const stored = localStorage.getItem(savingsTargetStorageKey);
+    if (!stored) return saved;
+    const parsed = JSON.parse(stored) as Record<string, unknown>;
+    for (const [month, value] of Object.entries(parsed)) {
+      if (/^\d{4}-\d{2}$/.test(month) && typeof value === "number" && Number.isFinite(value) && value > 0) {
+        saved[month] = value;
+      }
+    }
+  } catch {
+    // Keep the app usable if one saved savings goal is damaged.
+  }
+  return saved;
+}
+
 function parseMonthlyAmounts(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const parsed: Record<string, number> = {};
@@ -214,7 +236,12 @@ function parseMonthlyAmounts(value: unknown) {
 function parseBackup(value: unknown): PocketBackup["data"] | null {
   if (!value || typeof value !== "object") return null;
   const backup = value as Partial<PocketBackup>;
-  if (backup.app !== "Pocket" || backup.version !== 1 || !backup.data || typeof backup.data !== "object") {
+  if (
+    backup.app !== "Pocket" ||
+    (backup.version !== 1 && backup.version !== 2 && backup.version !== 3) ||
+    !backup.data ||
+    typeof backup.data !== "object"
+  ) {
     return null;
   }
 
@@ -228,15 +255,21 @@ function parseBackup(value: unknown): PocketBackup["data"] | null {
   const savedOpeningBalances = hasOpeningBalances ? parseMonthlyAmounts(data.openingBalances) : savedTargets;
   if (!savedOpeningBalances) return null;
   const targets = hasOpeningBalances ? savedTargets : {};
+  const savedSavingsTargets = data.savingsTargets === undefined ? {} : parseMonthlyAmounts(data.savingsTargets);
+  if (!savedSavingsTargets) return null;
 
-  const ownerName = typeof data.ownerName === "string" ? data.ownerName.trim().slice(0, 24) : "";
-  if (!ownerName || typeof data.targetAlertsEnabled !== "boolean") return null;
+  const savedOwnerName = typeof data.ownerName === "string" ? data.ownerName.trim().slice(0, 24) : "";
+  if (!savedOwnerName || typeof data.targetAlertsEnabled !== "boolean") return null;
+  const ownerName = backup.version === 1 && legacyDefaultOwnerNames.has(savedOwnerName.toLowerCase())
+    ? defaultOwnerName
+    : savedOwnerName;
   if (data.theme !== "light" && data.theme !== "dark") return null;
 
   return {
     expenses: expenses as Expense[],
     targets,
     openingBalances: savedOpeningBalances,
+    savingsTargets: savedSavingsTargets,
     ownerName,
     targetAlertsEnabled: data.targetAlertsEnabled,
     theme: data.theme,
@@ -270,7 +303,7 @@ function WeeklyTrendChart({ values, theme }: { values: number[]; theme: Theme })
         y: chart.top + plotHeight - (value / maximum) * plotHeight,
       }));
 
-      context.strokeStyle = theme === "dark" ? "rgba(255,255,255,.08)" : "rgba(21,25,22,.09)";
+      context.strokeStyle = theme === "dark" ? "rgba(255,255,255,.08)" : "rgba(23,27,47,.09)";
       context.lineWidth = 1;
       context.setLineDash([3, 5]);
       for (let line = 0; line <= 4; line += 1) {
@@ -304,33 +337,33 @@ function WeeklyTrendChart({ values, theme }: { values: number[]; theme: Theme })
       context.lineTo(points[0].x, height - chart.bottom);
       context.closePath();
       const area = context.createLinearGradient(0, chart.top, 0, height - chart.bottom);
-      area.addColorStop(0, "rgba(212,244,118,.42)");
-      area.addColorStop(.45, "rgba(89,201,145,.2)");
-      area.addColorStop(1, "rgba(40,118,81,0)");
+      area.addColorStop(0, "rgba(98,217,255,.42)");
+      area.addColorStop(.45, "rgba(124,140,255,.2)");
+      area.addColorStop(1, "rgba(86,105,216,0)");
       context.fillStyle = area;
       context.fill();
 
       tracePath();
       const line = context.createLinearGradient(chart.left, 0, width - chart.right, 0);
-      line.addColorStop(0, "#3fbf7f");
-      line.addColorStop(.52, "#72dda5");
-      line.addColorStop(1, "#d4f476");
+      line.addColorStop(0, "#5669d8");
+      line.addColorStop(.52, "#7c8cff");
+      line.addColorStop(1, "#62d9ff");
       context.strokeStyle = line;
       context.lineWidth = 3;
       context.lineCap = "round";
       context.lineJoin = "round";
-      context.shadowColor = "rgba(89,201,145,.3)";
+      context.shadowColor = "rgba(124,140,255,.32)";
       context.shadowBlur = 10;
       context.stroke();
       context.shadowBlur = 0;
 
-      const textColor = theme === "dark" ? "#929b94" : "#69716b";
+      const textColor = theme === "dark" ? "#9fa7c2" : "#68708d";
       context.fillStyle = textColor;
       context.font = "700 9px system-ui, sans-serif";
       context.textAlign = "center";
       points.forEach((point, index) => {
         context.beginPath();
-        context.fillStyle = index === points.length - 1 ? "#d4f476" : "#59c991";
+        context.fillStyle = index === points.length - 1 ? "#62d9ff" : "#7c8cff";
         context.arc(point.x, point.y, 4, 0, Math.PI * 2);
         context.fill();
         context.fillStyle = textColor;
@@ -361,6 +394,7 @@ export default function PocketDashboard() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [targets, setTargets] = useState<Record<string, number>>({});
   const [openingBalances, setOpeningBalances] = useState<Record<string, number>>({});
+  const [savingsTargets, setSavingsTargets] = useState<Record<string, number>>({});
   const [selectedMonth, setSelectedMonth] = useState(monthKey());
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState<Category>("Food");
@@ -369,16 +403,19 @@ export default function PocketDashboard() {
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetDraft, setTargetDraft] = useState("");
   const [balanceDraft, setBalanceDraft] = useState("");
+  const [savingsTargetDraft, setSavingsTargetDraft] = useState("");
   const [planError, setPlanError] = useState("");
   const [targetAlertsEnabled, setTargetAlertsEnabled] = useState(false);
   const [targetAlertDraft, setTargetAlertDraft] = useState(false);
-  const [ownerName, setOwnerName] = useState("Ratchet");
-  const [nameDraft, setNameDraft] = useState("Ratchet");
+  const [ownerName, setOwnerName] = useState(defaultOwnerName);
+  const [nameDraft, setNameDraft] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [theme, setTheme] = useState<Theme | null>(null);
   const [ledgerFilter, setLedgerFilter] = useState<LedgerFilter>("All");
   const [activeView, setActiveView] = useState<AppView>("home");
+  const [addingExpense, setAddingExpense] = useState(false);
+  const [expenseAdded, setExpenseAdded] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [backupMessage, setBackupMessage] = useState("");
   const [backupError, setBackupError] = useState(false);
@@ -387,9 +424,13 @@ export default function PocketDashboard() {
 
   useEffect(() => {
     try {
+      // Client-only local storage is intentionally hydrated after the first render.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setExpenses(loadSavedExpenses());
       const savedTargets = loadSavedTargets();
       const savedOpeningBalances = loadSavedOpeningBalances();
+      const savedSavingsTargets = loadSavedSavingsTargets();
+      setSavingsTargets(savedSavingsTargets);
       if (localStorage.getItem(monthlyPlanMigrationKey) === "true") {
         setTargets(savedTargets);
         setOpeningBalances(savedOpeningBalances);
@@ -402,11 +443,18 @@ export default function PocketDashboard() {
         localStorage.setItem(monthlyPlanMigrationKey, "true");
       }
       setTargetAlertsEnabled(localStorage.getItem(targetAlertsStorageKey) === "true");
-      const savedOwnerName = localStorage.getItem(ownerNameStorageKey)?.trim();
-      if (savedOwnerName) {
-        setOwnerName(savedOwnerName);
-        setNameDraft(savedOwnerName);
-      }
+      const savedOwnerName = localStorage.getItem(ownerNameStorageKey)?.trim().slice(0, 24);
+      const normalizedSavedOwnerName = savedOwnerName?.toLowerCase() ?? "";
+      const shouldMigrateLegacyDefault =
+        localStorage.getItem(ownerNameBrandMigrationKey) !== "true" &&
+        legacyDefaultOwnerNames.has(normalizedSavedOwnerName);
+      const nextOwnerName = savedOwnerName && !shouldMigrateLegacyDefault
+        ? savedOwnerName
+        : defaultOwnerName;
+      setOwnerName(nextOwnerName);
+      setNameDraft(nextOwnerName === defaultOwnerName ? "" : nextOwnerName);
+      localStorage.setItem(ownerNameStorageKey, nextOwnerName);
+      localStorage.setItem(ownerNameBrandMigrationKey, "true");
       const savedTheme = localStorage.getItem("pocket-theme") as Theme | null;
       setTheme(savedTheme ?? "dark");
       setLastBackupAt(localStorage.getItem(lastBackupStorageKey) ?? "");
@@ -441,6 +489,10 @@ export default function PocketDashboard() {
   }, [hydrated, openingBalances]);
 
   useEffect(() => {
+    if (hydrated) localStorage.setItem(savingsTargetStorageKey, JSON.stringify(savingsTargets));
+  }, [hydrated, savingsTargets]);
+
+  useEffect(() => {
     if (hydrated) localStorage.setItem(targetAlertsStorageKey, String(targetAlertsEnabled));
   }, [hydrated, targetAlertsEnabled]);
 
@@ -449,6 +501,8 @@ export default function PocketDashboard() {
   }, [hydrated, ownerName]);
 
   useEffect(() => {
+    // Changing month always starts the ledger on its complete, unfiltered view.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLedgerFilter("All");
   }, [selectedMonth]);
 
@@ -472,10 +526,14 @@ export default function PocketDashboard() {
   const rawTargetProgress = hasTarget ? (spent / target) * 100 : 0;
   const targetProgress = Math.min(rawTargetProgress, 100);
   const targetReached = hasTarget && spent >= target;
-  const spentShareOfBalance = hasOpeningBalance ? Math.min((spent / openingBalance) * 100, 100) : 0;
-  const savingsGradient = hasOpeningBalance
-    ? `conic-gradient(${balanceExceeded ? "var(--warning)" : "var(--accent)"} 0 ${spentShareOfBalance}%, var(--lime) ${spentShareOfBalance}% 100%)`
-    : "conic-gradient(var(--track) 0 100%)";
+  const savingsTarget = savingsTargets[selectedMonth] ?? 0;
+  const hasSavingsTarget = savingsTarget > 0;
+  const savingsGoalDifference = hasSavingsTarget ? saved - savingsTarget : 0;
+  const savingsGoalProtected = hasSavingsTarget && saved >= savingsTarget;
+  const safeToSpend = hasOpeningBalance && hasSavingsTarget
+    ? Math.max(openingBalance - savingsTarget - spent, 0)
+    : 0;
+  const savingsProgress = hasSavingsTarget ? Math.min((saved / savingsTarget) * 100, 100) : 0;
 
   useEffect(() => {
     if (
@@ -522,19 +580,6 @@ export default function PocketDashboard() {
     ? ((spent - previousMonthSpent) / previousMonthSpent) * 100
     : null;
 
-  const pieGradient = (() => {
-    if (spent <= 0) return "conic-gradient(var(--track) 0 100%)";
-    let cursor = 0;
-    const slices = categoryTotals
-      .filter((item) => item.total > 0)
-      .map((item) => {
-        const start = cursor;
-        cursor += (item.total / spent) * 100;
-        return `${item.color} ${start}% ${cursor}%`;
-      });
-    return `conic-gradient(${slices.join(", ")})`;
-  })();
-
   const weeklyTotals = Array.from({ length: 5 }, (_, week) =>
     monthExpenses
       .filter((expense) => Math.floor((Number(expense.date.slice(-2)) - 1) / 7) === week)
@@ -545,6 +590,54 @@ export default function PocketDashboard() {
     Number(selectedMonth.slice(5, 7)),
     0,
   ).getDate();
+  const recentMonthTotals = [1, 2, 3]
+    .map((offset) => expenses
+      .filter((expense) => expense.date.startsWith(shiftMonth(selectedMonth, -offset)))
+      .reduce((total, expense) => total + expense.amount, 0))
+    .filter((total) => total > 0);
+  const recentMonthlyAverage = recentMonthTotals.length
+    ? recentMonthTotals.reduce((total, value) => total + value, 0) / recentMonthTotals.length
+    : 0;
+  const elapsedDays = selectedMonth === monthKey()
+    ? Math.min(new Date().getDate(), daysInSelectedMonth)
+    : daysInSelectedMonth;
+  const projectedCurrentSpend = spent > 0 && elapsedDays >= 3
+    ? (spent / elapsedDays) * daysInSelectedMonth
+    : 0;
+
+  function recommendSavings(balanceValue: number, spendingTargetValue: number) {
+    if (!Number.isFinite(balanceValue) || balanceValue <= 0) {
+      return { amount: 0, reason: "Set your starting balance to get a recommendation." };
+    }
+
+    const validSpendingTarget = Number.isFinite(spendingTargetValue) && spendingTargetValue > 0 && spendingTargetValue <= balanceValue;
+    const balancedStartingPoint = balanceValue * 0.2;
+    const planBasedAmount = validSpendingTarget
+      ? Math.max(balanceValue - spendingTargetValue, 0)
+      : balancedStartingPoint;
+    const spendingSignals = [recentMonthlyAverage, projectedCurrentSpend].filter((value) => value > 0);
+    const expectedSpend = spendingSignals.length ? Math.max(...spendingSignals, spent) : 0;
+    const activityBasedAmount = expectedSpend > 0 ? Math.max(balanceValue - expectedSpend, 0) : planBasedAmount;
+    const conservativeAmount = Math.min(planBasedAmount, activityBasedAmount, balanceValue);
+    const amount = Math.floor(conservativeAmount / 100) * 100;
+
+    if (amount <= 0) {
+      return { amount: 0, reason: "Your current spending pace does not leave a safe saving amount yet." };
+    }
+    if (validSpendingTarget && spendingSignals.length) {
+      return { amount, reason: "Based on your spending target and recent spending pace." };
+    }
+    if (validSpendingTarget) {
+      return { amount, reason: "Based on the amount left after your spending target." };
+    }
+    if (spendingSignals.length) {
+      return { amount, reason: "A 20% starting point adjusted for your recent spending pace." };
+    }
+    return { amount, reason: "A balanced 20% starting point for this month." };
+  }
+
+  const savingsRecommendation = recommendSavings(openingBalance, target);
+  const draftSavingsRecommendation = recommendSavings(Number(balanceDraft), Number(targetDraft));
   const topCategory = categoryTotals[0]?.total > 0 ? categoryTotals[0] : null;
   const biggestExpense = monthExpenses.reduce<Expense | null>(
     (biggest, expense) => !biggest || expense.amount > biggest.amount ? expense : biggest,
@@ -591,12 +684,16 @@ export default function PocketDashboard() {
     setSelectedMonth(expenseDate.slice(0, 7));
     setAmount("");
     setNote("");
+    setAddingExpense(false);
+    setExpenseAdded(true);
+    window.setTimeout(() => setExpenseAdded(false), 2400);
   }
 
   async function saveTarget(event: FormEvent) {
     event.preventDefault();
     const parsedBalance = Number(balanceDraft);
     const parsedTarget = Number(targetDraft);
+    const parsedSavingsTarget = Number(savingsTargetDraft || 0);
     if (!parsedBalance || parsedBalance <= 0 || !parsedTarget || parsedTarget <= 0) {
       setPlanError("Enter both your starting balance and spending target.");
       return;
@@ -605,8 +702,22 @@ export default function PocketDashboard() {
       setPlanError("Your spending target cannot be higher than your starting balance.");
       return;
     }
+    if (!Number.isFinite(parsedSavingsTarget) || parsedSavingsTarget < 0 || parsedSavingsTarget > parsedBalance) {
+      setPlanError("Your savings goal must be between zero and your starting balance.");
+      return;
+    }
+    if (parsedTarget + parsedSavingsTarget > parsedBalance) {
+      setPlanError("Your spending target and savings goal cannot be more than your starting balance.");
+      return;
+    }
     setOpeningBalances((current) => ({ ...current, [selectedMonth]: parsedBalance }));
     setTargets((current) => ({ ...current, [selectedMonth]: parsedTarget }));
+    setSavingsTargets((current) => {
+      const next = { ...current };
+      if (parsedSavingsTarget > 0) next[selectedMonth] = parsedSavingsTarget;
+      else delete next[selectedMonth];
+      return next;
+    });
 
     let alertsAllowed = targetAlertDraft;
     if (alertsAllowed) {
@@ -626,20 +737,42 @@ export default function PocketDashboard() {
   function openTarget() {
     setBalanceDraft(hasOpeningBalance ? String(openingBalance) : "");
     setTargetDraft(hasTarget ? String(target) : "");
+    setSavingsTargetDraft(hasSavingsTarget ? String(savingsTarget) : "");
     setTargetAlertDraft(targetAlertsEnabled);
     setPlanError("");
     setEditingTarget(true);
   }
 
+  function openRecommendedSavingsGoal() {
+    if (!hasOpeningBalance || savingsRecommendation.amount <= 0) {
+      openTarget();
+      return;
+    }
+    setBalanceDraft(String(openingBalance));
+    setTargetDraft(hasTarget ? String(target) : String(Math.max(openingBalance - savingsRecommendation.amount, 1)));
+    setSavingsTargetDraft(String(savingsRecommendation.amount));
+    setTargetAlertDraft(targetAlertsEnabled);
+    setPlanError("");
+    setEditingTarget(true);
+  }
+
+  function useDraftSavingsRecommendation() {
+    if (draftSavingsRecommendation.amount <= 0) return;
+    setSavingsTargetDraft(String(draftSavingsRecommendation.amount));
+    if (!Number(targetDraft) && Number(balanceDraft) > draftSavingsRecommendation.amount) {
+      setTargetDraft(String(Number(balanceDraft) - draftSavingsRecommendation.amount));
+    }
+    setPlanError("");
+  }
+
   function openNameEditor() {
-    setNameDraft(ownerName);
+    setNameDraft(ownerName === defaultOwnerName ? "" : ownerName);
     setEditingName(true);
   }
 
   function saveName(event: FormEvent) {
     event.preventDefault();
-    const nextName = nameDraft.trim().slice(0, 24);
-    if (!nextName) return;
+    const nextName = nameDraft.trim().slice(0, 24) || defaultOwnerName;
     setOwnerName(nextName);
     setNameDraft(nextName);
     setEditingName(false);
@@ -656,12 +789,13 @@ export default function PocketDashboard() {
     const exportedAt = new Date().toISOString();
     const backup: PocketBackup = {
       app: "Pocket",
-      version: 1,
+      version: 3,
       exportedAt,
       data: {
         expenses,
         targets,
         openingBalances,
+        savingsTargets,
         ownerName,
         targetAlertsEnabled,
         theme: activeTheme,
@@ -705,6 +839,7 @@ export default function PocketDashboard() {
       setExpenses(parsed.expenses);
       setTargets(parsed.targets);
       setOpeningBalances(parsed.openingBalances ?? {});
+      setSavingsTargets(parsed.savingsTargets ?? {});
       setOwnerName(parsed.ownerName);
       setNameDraft(parsed.ownerName);
       setTargetAlertsEnabled(parsed.targetAlertsEnabled);
@@ -720,6 +855,8 @@ export default function PocketDashboard() {
   }
 
   function removeExpense(id: string) {
+    const expense = expenses.find((item) => item.id === id);
+    if (!expense || !window.confirm(`Delete ${expense.note || expense.category} for ${money.format(expense.amount)}?`)) return;
     setExpenses((current) => current.filter((expense) => expense.id !== id));
   }
 
@@ -734,7 +871,22 @@ export default function PocketDashboard() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function openAddExpense() {
+    setDate(today());
+    setAddingExpense(true);
+  }
+
   const activeTheme = theme ?? "dark";
+  const ownerHeading = ownerName.toLowerCase() === defaultOwnerName.toLowerCase()
+    ? defaultOwnerName
+    : `${ownerName}'s`;
+  const activeTitle = activeView === "home"
+    ? `${ownerHeading} expenses`
+    : activeView === "transactions"
+      ? `${ownerHeading} transactions`
+      : activeView === "reports"
+        ? `${ownerHeading} reports`
+        : "Settings";
 
   return (
     <main className="app-shell">
@@ -743,7 +895,7 @@ export default function PocketDashboard() {
           <span className="brand-mark" aria-hidden="true">P</span>
           <div>
             <p className="eyebrow">Pocket</p>
-            <h1>{activeView === "home" ? `${ownerName}'s expenses` : activeView === "transactions" ? `${ownerName}'s transactions` : `${ownerName}'s report`}</h1>
+            <h1>{activeTitle}</h1>
           </div>
         </div>
         <div className="topbar-actions">
@@ -764,27 +916,28 @@ export default function PocketDashboard() {
         </div>
       </header>
 
-      <section className="month-nav" aria-label="Choose month">
+      {activeView !== "settings" && <section className="month-nav" aria-label="Choose month">
         <button type="button" onClick={() => setSelectedMonth(shiftMonth(selectedMonth, -1))} aria-label="Previous month">‹</button>
         <strong>{monthLabel(selectedMonth)}</strong>
         <button type="button" onClick={() => setSelectedMonth(shiftMonth(selectedMonth, 1))} aria-label="Next month">›</button>
-      </section>
+      </section>}
 
       {activeView === "home" && (
-        <>
+        <div className="home-view">
+          <div className="home-primary">
           <section className={targetReached ? "target-card target-card-reached" : "target-card"} aria-labelledby="target-card-title">
             <div className="target-topline">
               <div>
-                <p className="eyebrow target-eyebrow">Monthly money plan</p>
-                <span id="target-card-title">Total available at month start</span>
+                <p className="eyebrow target-eyebrow">Monthly overview</p>
+                <span id="target-card-title">Starting balance</span>
               </div>
-              <button className="target-edit" type="button" onClick={openTarget}>Set plan</button>
+              <button className="target-edit" type="button" onClick={openTarget}>{hasOpeningBalance ? "Edit plan" : "Set plan"}</button>
             </div>
             <strong className="spent-total">{hasOpeningBalance ? money.format(openingBalance) : "Not set"}</strong>
             <div className="target-metrics target-metrics-three">
               <span><small>Total spent</small><strong>{money.format(spent)}</strong></span>
-              <span><small>Spend target</small><strong>{hasTarget ? money.format(target) : "Not set"}</strong></span>
               <span><small>{balanceExceeded ? "Over balance" : "Saved"}</small><strong>{hasOpeningBalance ? money.format(Math.abs(balanceDifference)) : "Not set"}</strong></span>
+              <span><small>{targetDifference < 0 ? "Over target" : "Target left"}</small><strong>{hasTarget ? money.format(Math.abs(targetDifference)) : "Not set"}</strong></span>
             </div>
             <div className="target-track" role="progressbar" aria-label="Monthly target used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(targetProgress)}>
               <span style={{ width: `${targetProgress}%` }} />
@@ -806,7 +959,48 @@ export default function PocketDashboard() {
             </aside>
           )}
 
-          <section className="panel add-expense-panel" aria-labelledby="add-title">
+            <section className={hasSavingsTarget && !savingsGoalProtected ? "savings-goal-card savings-goal-card-warning" : "savings-goal-card"} aria-labelledby="savings-goal-title">
+              <div className="savings-goal-heading">
+                <span className="savings-goal-icon" aria-hidden="true">S</span>
+                <div>
+                  <p className="eyebrow">{hasSavingsTarget ? "Savings goal" : "Pocket recommends"}</p>
+                  <strong id="savings-goal-title">{hasSavingsTarget ? money.format(savingsTarget) : savingsRecommendation.amount > 0 ? money.format(savingsRecommendation.amount) : "No safe amount yet"}</strong>
+                </div>
+                {hasSavingsTarget && <button type="button" onClick={openTarget}>Edit</button>}
+              </div>
+              {hasSavingsTarget ? (
+                <>
+                  <div className="savings-goal-stats">
+                    <span><small>Saved now</small><strong>{money.format(saved)}</strong></span>
+                    <span><small>{savingsGoalProtected ? "Safe to spend" : "Goal shortfall"}</small><strong>{money.format(savingsGoalProtected ? safeToSpend : Math.abs(savingsGoalDifference))}</strong></span>
+                  </div>
+                  <div className="savings-goal-track" role="progressbar" aria-label="Current savings compared with savings goal" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(savingsProgress)}>
+                    <span style={{ width: `${savingsProgress}%` }} />
+                  </div>
+                  <p>{savingsGoalProtected ? "Your goal is protected at your current spending level." : "Reduce spending to bring this savings goal back on track."}</p>
+                </>
+              ) : (
+                <>
+                  <p>{savingsRecommendation.reason}</p>
+                  <div className="savings-recommendation-actions">
+                    {savingsRecommendation.amount > 0 && <button type="button" onClick={openRecommendedSavingsGoal}>Use recommendation</button>}
+                    <button type="button" onClick={openTarget}>Set another goal</button>
+                  </div>
+                </>
+              )}
+            </section>
+
+            <section className="quick-add-card" aria-labelledby="quick-add-title">
+              <span className="quick-add-icon" aria-hidden="true">+</span>
+              <div>
+                <strong id="quick-add-title">Record a new expense</strong>
+                <small>Add an amount in just a few seconds</small>
+              </div>
+              <button type="button" onClick={openAddExpense}>Add expense</button>
+            </section>
+          </div>
+
+          <section className="panel add-expense-panel legacy-add-panel" aria-labelledby="add-title">
             <div className="section-heading">
               <div>
                 <p className="eyebrow">Quick entry</p>
@@ -840,7 +1034,7 @@ export default function PocketDashboard() {
             <div className="section-heading">
               <div>
                 <p className="eyebrow">Tap to explore</p>
-                <h2 id="category-spend-title">{ownerName}&apos;s monthly expenses</h2>
+                <h2 id="category-spend-title">Category spend</h2>
               </div>
               <span>{monthExpenses.length} {monthExpenses.length === 1 ? "entry" : "entries"}</span>
             </div>
@@ -861,7 +1055,7 @@ export default function PocketDashboard() {
             </div>
           </section>
 
-        </>
+        </div>
       )}
 
       {activeView === "transactions" && (
@@ -869,7 +1063,7 @@ export default function PocketDashboard() {
           <div className="section-heading expense-heading">
             <div>
               <p className="eyebrow">Complete monthly ledger</p>
-              <h2 id="all-expenses-title">{ownerName}&apos;s {ledgerFilter === "All" ? "expense transactions" : `${ledgerFilter} expenses`}</h2>
+              <h2 id="all-expenses-title">{ownerHeading} {ledgerFilter === "All" ? "expense transactions" : `${ledgerFilter} expenses`}</h2>
             </div>
             <div className="ledger-totals">
               <span>{ledgerExpenses.length} {ledgerExpenses.length === 1 ? "entry" : "entries"}</span>
@@ -912,6 +1106,7 @@ export default function PocketDashboard() {
                   </div>
                 </div>
               ))}
+              {ledgerExpenses.length > 8 && <button className="back-to-top" type="button" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>Back to top</button>}
             </div>
           ) : (
             <div className="empty-state"><span aria-hidden="true">◎</span><strong>No expenses here</strong><p>Add an expense or choose another category.</p></div>
@@ -924,12 +1119,13 @@ export default function PocketDashboard() {
           <article className="report-summary">
             <div>
               <p className="eyebrow report-eyebrow">Monthly analysis</p>
-              <h2 id="reports-title">{ownerName}&apos;s report</h2>
+              <h2 id="reports-title">{ownerHeading} reports</h2>
             </div>
             <strong>{money.format(spent)}</strong>
             <div className="report-plan-metrics">
               <span><small>Starting balance</small><strong>{hasOpeningBalance ? money.format(openingBalance) : "Not set"}</strong></span>
               <span><small>{balanceExceeded ? "Over balance" : "Saved this month"}</small><strong>{hasOpeningBalance ? money.format(Math.abs(balanceDifference)) : "Not set"}</strong></span>
+              <span><small>Savings goal</small><strong>{hasSavingsTarget ? money.format(savingsTarget) : "Not set"}</strong></span>
             </div>
             <p className={monthChange !== null && monthChange > 0 ? "report-delta report-delta-up" : "report-delta"}>
               {monthChange === null
@@ -946,16 +1142,23 @@ export default function PocketDashboard() {
               <span>{monthLabel(selectedMonth)}</span>
             </div>
             {hasOpeningBalance ? (
-              <div className="pie-chart-layout">
-                <div className="donut-chart savings-donut" style={{ background: savingsGradient }} role="img" aria-label={`${money.format(spent)} spent and ${money.format(saved)} saved this month`}>
-                  <div><strong>{money.format(saved)}</strong><span>Saved</span></div>
+              <div className="balance-bars" role="img" aria-label={`${money.format(spent)} spent and ${money.format(saved)} currently saved this month`}>
+                <div className="balance-bar-row">
+                  <div><span>Spent</span><strong>{money.format(spent)}</strong></div>
+                  <div className="balance-bar-track"><span className="balance-bar-spent" style={{ width: `${Math.min((spent / openingBalance) * 100, 100)}%` }} /></div>
+                  <small>{Math.round((spent / openingBalance) * 100)}% of starting balance</small>
                 </div>
-                <div className="chart-legend savings-legend">
-                  <div><span className="spent-dot" /><strong>Spent</strong><small>{money.format(spent)}</small></div>
-                  <div><span className="saved-dot" /><strong>Saved</strong><small>{money.format(saved)}</small></div>
-                  {balanceExceeded && <p className="balance-warning">Spending is {money.format(Math.abs(balanceDifference))} above the starting balance.</p>}
-                  {!balanceExceeded && <p>Saved is calculated automatically from your starting balance and expenses.</p>}
+                <div className="balance-bar-row">
+                  <div><span>Saved now</span><strong>{money.format(saved)}</strong></div>
+                  <div className="balance-bar-track"><span className="balance-bar-saved" style={{ width: `${Math.min((saved / openingBalance) * 100, 100)}%` }} /></div>
+                  <small>{balanceExceeded ? `${money.format(Math.abs(balanceDifference))} over balance` : `${Math.round((saved / openingBalance) * 100)}% of starting balance remains`}</small>
                 </div>
+                {hasSavingsTarget && (
+                  <div className={savingsGoalProtected ? "savings-report-status" : "savings-report-status savings-report-status-warning"}>
+                    <span><small>Savings goal</small><strong>{money.format(savingsTarget)}</strong></span>
+                    <span><small>{savingsGoalProtected ? "Safe to spend" : "Goal shortfall"}</small><strong>{money.format(savingsGoalProtected ? safeToSpend : Math.abs(savingsGoalDifference))}</strong></span>
+                  </div>
+                )}
               </div>
             ) : (
               <button className="report-empty-action" type="button" onClick={openTarget}>Set a starting balance to see monthly savings</button>
@@ -967,21 +1170,19 @@ export default function PocketDashboard() {
               <div><p className="eyebrow">Expense mix</p><h2 id="category-chart-title">By category</h2></div>
               <span>{monthExpenses.length} entries</span>
             </div>
-            <div className="pie-chart-layout">
-              <div className="donut-chart" style={{ background: pieGradient }} role="img" aria-label="Pie chart showing expense share by category">
-                <div><strong>{money.format(spent)}</strong><span>Total</span></div>
-              </div>
-              <div className="chart-legend">
+            {topCategory ? (
+              <div className="category-bars" role="img" aria-label="Expense share by category">
                 {categoryTotals.filter((item) => item.total > 0).map((item) => (
-                  <div key={item.name}>
-                    <span style={{ background: item.color }} />
-                    <strong>{item.name}</strong>
-                    <small>{Math.round((item.total / spent) * 100)}%</small>
+                  <div className="category-bar-row" key={item.name}>
+                    <span className="category-bar-icon" style={{ background: `${item.color}22`, color: item.color }} aria-hidden="true">{item.icon}</span>
+                    <div className="category-bar-content">
+                      <div><strong>{item.name}</strong><span>{money.format(item.total)} &middot; {Math.round((item.total / spent) * 100)}%</span></div>
+                      <span className="category-bar-track"><span style={{ width: `${(item.total / topCategory.total) * 100}%`, background: `linear-gradient(90deg, ${item.color}b8, ${item.color})` }} /></span>
+                    </div>
                   </div>
                 ))}
-                {!topCategory && <p>No expenses to chart yet.</p>}
               </div>
-            </div>
+            ) : <div className="chart-empty"><span aria-hidden="true">{"\u25ce"}</span><p>No expenses to chart yet.</p></div>}
           </article>
 
           <article className="panel chart-card" aria-labelledby="weekly-chart-title">
@@ -1003,11 +1204,115 @@ export default function PocketDashboard() {
         </section>
       )}
 
-      <nav className="bottom-nav" aria-label="Main app navigation">
+      {activeView === "settings" && (
+        <section className="settings-view" aria-labelledby="settings-title">
+          <article className="settings-profile-card">
+            <span className="settings-avatar" aria-hidden="true">{ownerName.slice(0, 1).toUpperCase()}</span>
+            <div>
+              <p className="eyebrow">Pocket profile</p>
+              <h2 id="settings-title">{ownerName === defaultOwnerName ? "Pocket Expense" : ownerName}</h2>
+              <span>{ownerName === defaultOwnerName ? "Add your name for personalised headings" : "Your name is shown only on this device"}</span>
+            </div>
+            <button type="button" onClick={openNameEditor}>Edit</button>
+          </article>
+
+          <div className="settings-grid">
+            <article className="panel settings-card">
+              <div className="settings-card-heading">
+                <span className="settings-card-icon" aria-hidden="true">{"\u2726"}</span>
+                <div><p className="eyebrow">Appearance</p><h2>Make Pocket yours</h2></div>
+              </div>
+              <div className="theme-selector" role="group" aria-label="Choose app appearance">
+                <button type="button" className={activeTheme === "light" ? "active" : ""} onClick={() => setTheme("light")}>Light</button>
+                <button type="button" className={activeTheme === "dark" ? "active" : ""} onClick={() => setTheme("dark")}>Dark</button>
+              </div>
+            </article>
+
+            <article className="panel settings-card">
+              <div className="settings-card-heading">
+                <span className="settings-card-icon" aria-hidden="true">{"\u25ce"}</span>
+                <div><p className="eyebrow">Monthly plan</p><h2>{monthLabel(selectedMonth)}</h2></div>
+              </div>
+              <div className="settings-summary-row"><span>Starting balance</span><strong>{hasOpeningBalance ? money.format(openingBalance) : "Not set"}</strong></div>
+              <div className="settings-summary-row"><span>Spending target</span><strong>{hasTarget ? money.format(target) : "Not set"}</strong></div>
+              <div className="settings-summary-row"><span>Savings goal</span><strong>{hasSavingsTarget ? money.format(savingsTarget) : "Not set"}</strong></div>
+              <button className="settings-action" type="button" onClick={openTarget}>Manage monthly plan <span aria-hidden="true">{"\u203a"}</span></button>
+            </article>
+
+            <article className="panel settings-card settings-card-wide">
+              <div className="settings-card-heading">
+                <span className="settings-card-icon" aria-hidden="true">{"\u21e9"}</span>
+                <div><p className="eyebrow">Your data</p><h2>Backup &amp; restore</h2></div>
+              </div>
+              <div className="settings-data-summary">
+                <div><span>Entries</span><strong>{expenses.length}</strong></div>
+                <div><span>Monthly plans</span><strong>{new Set([...Object.keys(openingBalances), ...Object.keys(targets), ...Object.keys(savingsTargets)]).size}</strong></div>
+                <div><span>Last backup</span><strong>{lastBackupAt ? new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" }).format(new Date(lastBackupAt)) : "Not yet"}</strong></div>
+              </div>
+              <button className="settings-action" type="button" onClick={openBackup}>Open backup tools <span aria-hidden="true">{"\u203a"}</span></button>
+            </article>
+          </div>
+
+          <p className="settings-version">Pocket Expense &middot; Phase 1 professional interface</p>
+        </section>
+      )}
+
+      <nav className="bottom-nav legacy-bottom-nav" aria-label="Legacy app navigation">
         <button type="button" className={activeView === "home" ? "active" : ""} onClick={() => changeView("home")} aria-current={activeView === "home" ? "page" : undefined}><span aria-hidden="true">⌂</span><small>Home</small></button>
         <button type="button" className={activeView === "transactions" ? "active" : ""} onClick={() => changeView("transactions")} aria-current={activeView === "transactions" ? "page" : undefined}><span aria-hidden="true">≡</span><small>Transactions</small></button>
         <button type="button" className={activeView === "reports" ? "active" : ""} onClick={() => changeView("reports")} aria-current={activeView === "reports" ? "page" : undefined}><span aria-hidden="true">▥</span><small>Reports</small></button>
       </nav>
+
+      <nav className="bottom-nav professional-nav" aria-label="Main app navigation">
+        <button type="button" className={activeView === "home" ? "active" : ""} onClick={() => changeView("home")} aria-current={activeView === "home" ? "page" : undefined}><span aria-hidden="true">{"\u2302"}</span><small>Home</small></button>
+        <button type="button" className={activeView === "transactions" ? "active" : ""} onClick={() => changeView("transactions")} aria-current={activeView === "transactions" ? "page" : undefined}><span aria-hidden="true">{"\u2261"}</span><small>Transactions</small></button>
+        <button type="button" className="nav-add-button" onClick={openAddExpense} aria-label="Add a new expense"><span aria-hidden="true">+</span><small>Add</small></button>
+        <button type="button" className={activeView === "reports" ? "active" : ""} onClick={() => changeView("reports")} aria-current={activeView === "reports" ? "page" : undefined}><span aria-hidden="true">{"\u25a5"}</span><small>Reports</small></button>
+        <button type="button" className={activeView === "settings" ? "active" : ""} onClick={() => changeView("settings")} aria-current={activeView === "settings" ? "page" : undefined}><span aria-hidden="true">{"\u2699"}</span><small>Settings</small></button>
+      </nav>
+
+      {expenseAdded && (
+        <div className="app-toast" role="status" aria-live="polite">
+          <span aria-hidden="true">{"\u2713"}</span>
+          Expense added successfully
+        </div>
+      )}
+
+      {addingExpense && (
+        <div className="modal-backdrop add-expense-backdrop" role="presentation" onMouseDown={() => setAddingExpense(false)}>
+          <form className="target-modal add-expense-modal" onSubmit={addExpense} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="new-expense-title">
+            <button className="modal-close" type="button" onClick={() => setAddingExpense(false)} aria-label="Close">{"\u00d7"}</button>
+            <p className="eyebrow">Quick entry</p>
+            <h2 id="new-expense-title">Add expense</h2>
+            <p className="modal-description">Record what you spent and Pocket will update this month automatically.</p>
+
+            <label className="expense-amount-field">
+              <span>Amount</span>
+              <div className="amount-wrap modal-amount-wrap">
+                <span>{"\u20b9"}</span>
+                <input autoFocus value={amount} onChange={(event) => setAmount(event.target.value)} type="number" min="1" step="1" inputMode="decimal" placeholder="0" aria-label="Expense amount" required />
+              </div>
+            </label>
+
+            <fieldset className="expense-category-fieldset">
+              <legend>Category</legend>
+              <div className="category-grid" role="radiogroup" aria-label="Expense category">
+                {categories.map((item) => (
+                  <button key={item.name} type="button" role="radio" aria-checked={category === item.name} className={category === item.name ? "category-chip selected" : "category-chip"} onClick={() => setCategory(item.name)}>
+                    <span aria-hidden="true">{item.icon}</span>{item.name}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+
+            <div className="details-row modal-details-row">
+              <label><span>Note</span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="What was it for?" aria-label="Expense note" /></label>
+              <label><span>Date</span><input value={date} onChange={(event) => setDate(event.target.value)} type="date" aria-label="Expense date" required /></label>
+            </div>
+            <button className="primary-button" type="submit">Save expense</button>
+          </form>
+        </div>
+      )}
 
       {editingName && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setEditingName(false)}>
@@ -1015,9 +1320,9 @@ export default function PocketDashboard() {
             <button className="modal-close" type="button" onClick={() => setEditingName(false)} aria-label="Close">×</button>
             <p className="eyebrow">Personalise Pocket</p>
             <h2 id="name-title">Add your name</h2>
-            <p className="modal-description">No login is created. Your name is only used for headings on this device.</p>
-            <div className="name-input"><input autoFocus value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} type="text" maxLength={24} autoComplete="name" placeholder="Your name" required /></div>
-            <button className="primary-button" type="submit">Save name</button>
+            <p className="modal-description">No login is created. Add a name for personalised headings, or leave it blank to show Pocket.</p>
+            <div className="name-input"><input autoFocus value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} type="text" maxLength={24} autoComplete="name" placeholder="Your name (optional)" /></div>
+            <button className="primary-button" type="submit">Save</button>
           </form>
         </div>
       )}
@@ -1032,7 +1337,7 @@ export default function PocketDashboard() {
 
             <div className="backup-summary" aria-label="Backup contents">
               <div><span>Entries</span><strong>{expenses.length}</strong></div>
-              <div><span>Monthly plans</span><strong>{new Set([...Object.keys(openingBalances), ...Object.keys(targets)]).size}</strong></div>
+              <div><span>Monthly plans</span><strong>{new Set([...Object.keys(openingBalances), ...Object.keys(targets), ...Object.keys(savingsTargets)]).size}</strong></div>
               <div><span>Last backup</span><strong>{lastBackupAt ? new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(new Date(lastBackupAt)) : "Not yet"}</strong></div>
             </div>
 
@@ -1052,7 +1357,7 @@ export default function PocketDashboard() {
             <button className="modal-close" type="button" onClick={() => setEditingTarget(false)} aria-label="Close">×</button>
             <p className="eyebrow">{monthLabel(selectedMonth)}</p>
             <h2 id="target-title">Set monthly money plan</h2>
-            <p className="modal-description">Add the money available at the start of this month, then choose how much of it you plan to spend.</p>
+            <p className="modal-description">Set your starting balance, spending target, and the amount you want to keep as savings.</p>
             <label className="plan-field">
               <span>Total available at month start</span>
               <div className="target-input"><span>₹</span><input autoFocus value={balanceDraft} onChange={(event) => { setBalanceDraft(event.target.value); setPlanError(""); }} type="number" min="1" inputMode="decimal" required /></div>
@@ -1061,9 +1366,29 @@ export default function PocketDashboard() {
               <span>Spending target for this month</span>
               <div className="target-input"><span>₹</span><input value={targetDraft} onChange={(event) => { setTargetDraft(event.target.value); setPlanError(""); }} type="number" min="1" max={balanceDraft || undefined} inputMode="decimal" required /></div>
             </label>
+            {Number(balanceDraft) > 0 && (
+              <div className="plan-recommendation">
+                <div>
+                  <span>Pocket recommends saving</span>
+                  <strong>{draftSavingsRecommendation.amount > 0 ? money.format(draftSavingsRecommendation.amount) : "No safe amount yet"}</strong>
+                </div>
+                <p>{draftSavingsRecommendation.reason}</p>
+                {draftSavingsRecommendation.amount > 0 && <button type="button" onClick={useDraftSavingsRecommendation}>Use this goal</button>}
+              </div>
+            )}
+            <label className="plan-field">
+              <span>Savings goal for this month (optional)</span>
+              <div className="target-input"><span>₹</span><input value={savingsTargetDraft} onChange={(event) => { setSavingsTargetDraft(event.target.value); setPlanError(""); }} type="number" min="0" max={balanceDraft || undefined} inputMode="decimal" placeholder="0" /></div>
+            </label>
+            {Number(balanceDraft) > 0 && Number(savingsTargetDraft) > 0 && (
+              <div className="plan-calculation">
+                <span>Available after protecting savings</span>
+                <strong>{money.format(Math.max(Number(balanceDraft) - Number(savingsTargetDraft), 0))}</strong>
+              </div>
+            )}
             {planError && <p className="plan-error" role="alert">{planError}</p>}
             <label className="notification-toggle">
-              <span><strong>Phone notification</strong><small>Notify me when the target is reached</small></span>
+              <span><strong>Phone notification</strong><small>Notify me when the spending target is reached</small></span>
               <input type="checkbox" checked={targetAlertDraft} onChange={(event) => setTargetAlertDraft(event.target.checked)} />
             </label>
             <button className="primary-button" type="submit">Save monthly plan</button>

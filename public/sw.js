@@ -1,4 +1,4 @@
-const CACHE_NAME = "pocket-offline-v12";
+const CACHE_NAME = "pocket-offline-v20";
 const APP_SHELL = [
   "/manifest.webmanifest",
   "/favicon-32.png",

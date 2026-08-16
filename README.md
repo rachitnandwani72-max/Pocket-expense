@@ -1,100 +1,75 @@
-# vinext-starter
+# Pocket Expense
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+Pocket Expense is a private-first monthly expense tracker with quick entry,
+category views, complete monthly transactions, savings and target tracking,
+reports, backup and restore, dark mode, and offline support.
 
-## Prerequisites
+The same React interface powers:
 
-- Node.js `>=22.13.0`
+- the hosted installable web app (PWA);
+- the bundled Android app built with Capacitor; and
+- the iPhone/iPad web-app experience installed from Safari.
 
-## Quick Start
+## Privacy model
+
+Expense records, balances, targets, preferences, and the user's name are kept
+in that device's browser storage. They are not included in the source code and
+are not sent to a server. Backup and restore use a user-controlled JSON file.
+
+## Web development
+
+Requirements: Node.js 22.13 or newer.
 
 ```bash
 npm install
 npm run dev
-npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+The hosted Sites build uses vinext and the project configuration in
+`.openai/hosting.json`.
 
-## Included Shape
+## Mobile development
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+The mobile bundle has its own Vite entry point in `mobile/` and reuses the
+dashboard component and stylesheet from `app/`.
 
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+npm run mobile:build
+npm run mobile:sync
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+### Android APK
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+Requirements:
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+- JDK 21
+- Android SDK Platform 36
+- Android SDK Build Tools 35 or newer
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+On Windows, after setting `JAVA_HOME` and the Android SDK location:
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+```powershell
+npm run mobile:sync
+cd android
+./gradlew.bat assembleDebug
+```
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+The test APK is created at
+`android/app/build/outputs/apk/debug/app-debug.apk`. A public Play Store release
+must use a user-owned release signing key and an Android App Bundle.
 
-## Useful Commands
+## Main source files
 
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
+- `app/PocketDashboard.tsx`: expense logic and all application screens
+- `app/globals.css`: responsive design, themes, charts, and safe-area handling
+- `mobile/main.tsx`: bundled mobile entry point
+- `vite.mobile.config.ts`: mobile web-asset build
+- `capacitor.config.ts`: native app identity and web bundle configuration
+- `android/`: Android wrapper and branded native resources
+- `public/sw.js`: hosted web-app offline cache
+- `public/manifest.webmanifest`: installable web-app metadata
 
-## Learn More
+## Data safety
 
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+The current Android build declares only Android's internet permission. It does
+not request contacts, camera, microphone, location, or broad file access.

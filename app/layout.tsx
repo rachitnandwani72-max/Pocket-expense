@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f1f3ee" },
-    { media: "(prefers-color-scheme: dark)", color: "#090c0a" },
+    { media: "(prefers-color-scheme: light)", color: "#f3f5ff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0c1020" },
   ],
 };
 
@@ -24,11 +24,11 @@ export async function generateMetadata(): Promise<Metadata> {
   const incomingHeaders = await headers();
   const host = incomingHeaders.get("x-forwarded-host") ?? incomingHeaders.get("host") ?? "localhost:3000";
   const protocol = incomingHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
-  const ogImage = `${protocol}://${host}/og-v6.png`;
+  const ogImage = `${protocol}://${host}/og-midnight.png`;
 
   return {
     title: "Pocket — Personal Expense Tracker",
-    description: "A private, offline-ready monthly expense dashboard with device-local data.",
+    description: "A clear personal expense dashboard with monthly plans, category insights, reports, and offline access.",
     applicationName: "Pocket",
     manifest: "/manifest.webmanifest",
     appleWebApp: {
@@ -47,13 +47,13 @@ export async function generateMetadata(): Promise<Metadata> {
     },
     openGraph: {
       title: "Pocket",
-      description: "Your personalised expenses, transactions, and reports. Private and offline-ready.",
-      images: [{ url: ogImage, width: 1728, height: 910, alt: "Personalised Pocket expense tracker with a green weekly trend graph" }],
+      description: "Personal expenses, made clear. Track monthly spending, savings, categories, and reports.",
+      images: [{ url: ogImage, width: 1728, height: 910, alt: "Pocket expense tracker in a midnight blue theme with a weekly trend graph" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "Pocket",
-      description: "Your personalised expenses, transactions, and reports. Private and offline-ready.",
+      description: "Personal expenses, made clear. Track monthly spending, savings, categories, and reports.",
       images: [ogImage],
     },
   };
