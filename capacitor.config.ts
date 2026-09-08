@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from "@capacitor/cli";
 
 const config: CapacitorConfig = {
-  appId: "com.rachit.pocketexpense",
-  appName: "Pocket",
+  appId: "com.rachit.pocket",
+  appName: "Pocket New",
   webDir: "mobile-dist",
   server: {
     androidScheme: "https",
