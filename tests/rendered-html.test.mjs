@@ -47,6 +47,20 @@ test("opens category spend in a dedicated transactions tab", async () => {
   assert.match(css, /\.bottom-nav/);
 });
 
+test("records income and includes it in the available monthly balance", async () => {
+  const dashboard = await readFile(new URL("app/PocketDashboard.tsx", root), "utf8");
+  const css = await readFile(new URL("app/globals.css", root), "utf8");
+
+  assert.match(dashboard, /type Income/);
+  assert.match(dashboard, /Record money in or out/);
+  assert.match(dashboard, /incomeReceived/);
+  assert.match(dashboard, /const totalAvailable = openingBalance \+ incomeReceived/);
+  assert.match(dashboard, /Income received/);
+  assert.match(dashboard, /setDate\(selectedMonth === monthKey\(\) \? today\(\) : `\$\{selectedMonth\}-01`\)/);
+  assert.match(css, /\.entry-type-toggle/);
+  assert.match(css, /\.income-ledger/);
+});
+
 test("includes personal headings and professional reports", async () => {
   const dashboard = await readFile(new URL("app/PocketDashboard.tsx", root), "utf8");
   const css = await readFile(new URL("app/globals.css", root), "utf8");
@@ -58,15 +72,31 @@ test("includes personal headings and professional reports", async () => {
   assert.doesNotMatch(dashboard, /Private on this phone/);
   assert.match(dashboard, /By category/);
   assert.match(dashboard, /Weekly trend/);
-  assert.match(dashboard, /category-bars/);
+  assert.match(dashboard, /category-column-chart/);
   assert.match(dashboard, /weeklyTotals/);
   assert.match(dashboard, /WeeklyTrendChart/);
   assert.match(dashboard, /createLinearGradient/);
   assert.match(dashboard, /Spent &amp; saved/);
-  assert.match(dashboard, /balance-bar-saved/);
+  assert.match(dashboard, /balance-circle/);
   assert.match(dashboard, /Pocket recommends/);
-  assert.match(css, /\.donut-chart/);
+  assert.match(css, /\.balance-circle/);
+  assert.match(css, /\.category-column-chart/);
   assert.match(css, /\.weekly-line-chart/);
+});
+
+test("summarizes completed months and records savings-goal achievement", async () => {
+  const dashboard = await readFile(new URL("app/PocketDashboard.tsx", root), "utf8");
+  const css = await readFile(new URL("app/globals.css", root), "utf8");
+
+  assert.match(dashboard, /selectedMonth < monthKey\(\)/);
+  assert.match(dashboard, /Completed month/);
+  assert.match(dashboard, /Goal achieved/);
+  assert.match(dashboard, /Goal not achieved/);
+  assert.match(dashboard, /Starting balance/);
+  assert.match(dashboard, /Total spent/);
+  assert.match(dashboard, /Total saved/);
+  assert.match(dashboard, /Savings target/);
+  assert.match(css, /\.month-end-summary/);
 });
 
 test("supports a monthly target and target-reached notifications", async () => {
@@ -81,10 +111,16 @@ test("supports a monthly target and target-reached notifications", async () => {
   assert.match(dashboard, /Notification\.requestPermission/);
   assert.match(dashboard, /registration\.showNotification/);
   assert.match(dashboard, /pocket-target-notified-/);
+  assert.match(dashboard, /target-progress-ring/);
+  assert.match(dashboard, /transactions-target-ring/);
+  assert.doesNotMatch(dashboard, /spending target cannot be higher than your starting balance/i);
+  assert.doesNotMatch(dashboard, /target and savings goal cannot be more than your starting balance/i);
+  assert.doesNotMatch(dashboard, /max=\{balanceDraft/);
 });
 
 test("exports and safely restores a complete local backup", async () => {
   const dashboard = await readFile(new URL("app/PocketDashboard.tsx", root), "utf8");
+  const nativeBackup = await readFile(new URL("android/app/src/main/java/com/rachit/pocket/PocketBackupPlugin.java", root), "utf8");
   const css = await readFile(new URL("app/globals.css", root), "utf8");
 
   assert.match(dashboard, /Backup &amp; restore/);
@@ -92,7 +128,14 @@ test("exports and safely restores a complete local backup", async () => {
   assert.match(dashboard, /Restore from backup/);
   assert.match(dashboard, /parseBackup/);
   assert.match(dashboard, /openingBalances/);
+  assert.match(dashboard, /pocket-incomes-v1/);
+  assert.match(dashboard, /version: 4/);
+  assert.match(dashboard, /incomes/);
   assert.match(dashboard, /pocket-backup-\$\{today\(\)\}\.json/);
+  assert.match(dashboard, /Capacitor\.isNativePlatform\(\)/);
+  assert.match(dashboard, /NativeBackup\.saveBackup/);
+  assert.match(nativeBackup, /Intent\.ACTION_CREATE_DOCUMENT/);
+  assert.match(nativeBackup, /openOutputStream/);
   assert.match(dashboard, /This will replace the Pocket data currently on this device/);
   assert.match(dashboard, /No data was changed/);
   assert.match(dashboard, /never uploaded/);

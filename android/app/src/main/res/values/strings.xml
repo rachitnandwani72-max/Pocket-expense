@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Pocket</string>
-    <string name="title_activity_main">Pocket</string>
-    <string name="package_name">com.rachit.pocketexpense</string>
-    <string name="custom_url_scheme">com.rachit.pocketexpense</string>
+    <string name="app_name">Pocket New</string>
+    <string name="title_activity_main">Pocket New</string>
+    <string name="package_name">com.rachit.pocket</string>
+    <string name="custom_url_scheme">com.rachit.pocket</string>
 </resources>
