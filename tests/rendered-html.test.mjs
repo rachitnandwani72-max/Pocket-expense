@@ -129,14 +129,14 @@ test("exports and safely restores a complete local backup", async () => {
   assert.match(dashboard, /parseBackup/);
   assert.match(dashboard, /openingBalances/);
   assert.match(dashboard, /pocket-incomes-v1/);
-  assert.match(dashboard, /version: 4/);
+  assert.match(dashboard, /version: 5/);
   assert.match(dashboard, /incomes/);
   assert.match(dashboard, /pocket-backup-\$\{today\(\)\}\.json/);
   assert.match(dashboard, /Capacitor\.isNativePlatform\(\)/);
   assert.match(dashboard, /NativeBackup\.saveBackup/);
   assert.match(nativeBackup, /Intent\.ACTION_CREATE_DOCUMENT/);
   assert.match(nativeBackup, /openOutputStream/);
-  assert.match(dashboard, /This will replace the Pocket data currently on this device/);
+  assert.match(dashboard, /This replaces the current data on this device/);
   assert.match(dashboard, /No data was changed/);
   assert.match(dashboard, /never uploaded/);
   assert.match(css, /\.backup-summary/);
