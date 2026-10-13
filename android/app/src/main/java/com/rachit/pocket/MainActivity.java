@@ -7,6 +7,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(PocketBackupPlugin.class);
+        registerPlugin(PocketDataPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

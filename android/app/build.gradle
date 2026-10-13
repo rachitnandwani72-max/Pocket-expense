@@ -1,14 +1,14 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace = "com.rachit.pocketexpense"
+    namespace = "com.rachit.pocket"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.rachit.pocketexpense"
+        applicationId "com.rachit.pocket"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 5
-        versionName "1.0.4"
+        versionCode 3
+        versionName "1.2.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +16,24 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            def keyFile = System.getenv("POCKET_KEYSTORE_FILE")
+            def signingPassword = System.getenv("POCKET_KEYSTORE_PASSWORD")
+            def keyAliasName = System.getenv("POCKET_KEY_ALIAS")
+            if (keyFile && signingPassword && keyAliasName) {
+                storeFile file(keyFile)
+                storePassword signingPassword
+                keyAlias keyAliasName
+                keyPassword signingPassword
+            }
+        }
+    }
     buildTypes {
         release {
+            if (System.getenv("POCKET_KEYSTORE_FILE")) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
