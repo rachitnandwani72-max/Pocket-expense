@@ -1361,6 +1361,97 @@ h2 { font-size: clamp(19px, 4vw, 23px); }
 .expense-amount { font-size: 13px; }
 .delete-button { font-size: 20px; min-height: 42px; min-width: 36px; }
 
+.row-edit-button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+  min-height: 42px;
+  padding: 0 10px;
+}
+
+.ledger-search,
+.other-label-field {
+  display: grid;
+  gap: 7px;
+  margin: 14px 0;
+}
+
+.ledger-search span,
+.other-label-field span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ledger-search input,
+.other-label-field input {
+  background: var(--card-soft);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink);
+  font: inherit;
+  min-height: 44px;
+  padding: 0 13px;
+  width: 100%;
+}
+
+.other-label-field small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.other-breakdown {
+  background: var(--card-soft);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  margin: 16px 0;
+  padding: 14px;
+}
+
+.other-breakdown-heading {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.other-breakdown-heading strong { font-size: 14px; }
+.other-breakdown-heading span { color: var(--muted); font-size: 12px; }
+
+.other-label-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.other-label-filters button {
+  align-items: baseline;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 9px 12px;
+}
+
+.other-label-filters button.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.other-label-filters button span,
+.other-label-filters button strong { font-size: 12px; }
+.other-label-filters button small { color: var(--muted); font-size: 11px; }
+
 .back-to-top {
   background: transparent;
   border: 1px solid var(--line);
@@ -1432,6 +1523,23 @@ h2 { font-size: clamp(19px, 4vw, 23px); }
 
 .settings-grid { display: grid; gap: 14px; }
 .settings-card { display: grid; gap: 16px; }
+
+.recurring-row { border-top: 1px solid var(--line); display: grid; gap: 10px; padding-top: 13px; }
+.recurring-row > div:first-child { display: grid; gap: 4px; min-width: 0; }
+.recurring-row strong { color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
+.recurring-row span, .recurring-empty { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.recurring-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.recurring-actions button, .undo-toast button { background: var(--accent-soft); border: 1px solid var(--line-strong); border-radius: 10px; color: var(--accent); cursor: pointer; font-size: 12px; font-weight: 750; min-height: 44px; padding: 0 12px; }
+.undo-toast { display: flex; gap: 14px; align-items: center; }
+.undo-toast button { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.3); color: white; }
+.repeat-field { display: grid; gap: 7px; margin: 12px 0; }
+.repeat-field > span { color: var(--muted); font-size: 12px; font-weight: 750; }
+.repeat-field select { background: var(--card-soft); border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); font-size: 14px; min-height: 48px; padding: 0 12px; width: 100%; }
+.repeat-field small { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.restore-preview { background: var(--card-soft); border: 1px solid var(--line-strong); border-radius: 14px; display: grid; gap: 9px; margin-top: 14px; padding: 14px; }
+.restore-preview strong { color: var(--ink); font-size: 14px; }
+.restore-preview span, .restore-preview p { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0; }
+.restore-preview .primary-button, .restore-preview .secondary-button { margin: 0; min-height: 44px; }
 
 .settings-card-heading {
   align-items: center;
@@ -2251,3 +2359,40 @@ h2 { font-size: clamp(19px, 4vw, 23px); }
   .savings-recommendation-actions { grid-template-columns: 1fr; }
   .plan-recommendation > div { align-items: flex-start; flex-direction: column; gap: 3px; }
 }
+
+/* Readable ledger controls, including large-text Android settings. */
+.expense-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+}
+.expense-row .expense-icon { grid-column: 1; grid-row: 1; }
+.expense-row .expense-copy { grid-column: 2; grid-row: 1; }
+.expense-row .expense-amount,
+.expense-row .income-amount { grid-column: 3; grid-row: 1; }
+.row-actions { display: flex; gap: 8px; grid-column: 2 / 4; justify-content: flex-end; min-width: 0; }
+.row-actions button { min-height: 48px; min-width: 48px; }
+.row-actions .delete-button { border: 1px solid var(--line); border-radius: 10px; opacity: 1; padding: 0; }
+.expense-copy span,
+.expense-date-heading span,
+.ledger-totals span,
+.settings-data-summary span,
+.backup-summary span,
+.report-plan-metrics small,
+.target-inline-metrics small,
+.balance-circle-legend small,
+.category-column-legend > div > span,
+.category-column-legend strong small,
+.professional-nav button small,
+.expense-amount-field,
+.expense-category-fieldset legend,
+.modal-details-row label > span { font-size: 12px; }
+.expense-filters button,
+.add-expense-modal .category-chip,
+.entry-type-toggle button,
+.month-nav button,
+.modal-close,
+.settings-profile-card > button { min-height: 48px; }
+.month-nav { grid-template-columns: 48px 1fr 48px; }
+.month-nav button { height: 48px; width: 48px; }
+.modal-close { height: 48px; width: 48px; right: 10px; top: 10px; }

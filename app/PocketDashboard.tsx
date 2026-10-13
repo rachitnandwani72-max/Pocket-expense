@@ -2,6 +2,9 @@
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor, registerPlugin } from "@capacitor/core";
+import { filterExpenses, otherLabel, summarizeOther } from "./expenseFilters";
+import { buildCsv } from "./csvExport";
+import { Frequency, RecurringSchedule, nextOccurrence, occurrencesThrough, recurringEntryId, validDate } from "./recurrence";
 
 type Category =
   | "Food"
@@ -20,6 +23,7 @@ type Expense = {
   amount: number;
   category: Category;
   note: string;
+  label?: string;
   date: string;
 };
 
@@ -36,18 +40,25 @@ type Theme = "light" | "dark";
 type AppView = "home" | "transactions" | "reports" | "settings";
 
 type PocketBackupPlugin = {
-  saveBackup(options: { fileName: string; data: string }): Promise<{ saved: boolean }>;
+  saveBackup(options: { fileName: string; data: string; mimeType?: string }): Promise<{ saved: boolean }>;
+  openBackup(): Promise<{ data: string | null }>;
+};
+type PocketDataPlugin = {
+  readSnapshot(): Promise<{ data: string | null }>;
+  writeSnapshot(options: { data: string }): Promise<{ saved: boolean }>;
 };
 
 const NativeBackup = registerPlugin<PocketBackupPlugin>("PocketBackup");
+const NativeData = registerPlugin<PocketDataPlugin>("PocketData");
 
 type PocketBackup = {
   app: "Pocket";
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5;
   exportedAt: string;
   data: {
     expenses: Expense[];
     incomes?: Income[];
+    recurring?: RecurringSchedule[];
     targets: Record<string, number>;
     openingBalances?: Record<string, number>;
     savingsTargets?: Record<string, number>;
@@ -70,6 +81,7 @@ const categories: { name: Category; icon: string; color: string }[] = [
 
 const categoryNames = new Set<Category>(categories.map((item) => item.name));
 const expenseStorageKey = "pocket-expenses-v3";
+const expenseMigrationKey = "pocket-expenses-v3-migrated";
 const incomeStorageKey = "pocket-incomes-v1";
 const targetStorageKey = "pocket-budgets-v3";
 const openingBalanceStorageKey = "pocket-opening-balances-v1";
@@ -79,6 +91,7 @@ const targetAlertsStorageKey = "pocket-target-alerts";
 const ownerNameStorageKey = "pocket-owner-name";
 const ownerNameBrandMigrationKey = "pocket-owner-name-brand-v1";
 const lastBackupStorageKey = "pocket-last-backup";
+const snapshotStorageKey = "pocket-snapshot-v5";
 const defaultOwnerName = "Pocket";
 const legacyDefaultOwnerNames = new Set(["rachit", "ratchet"]);
 
@@ -138,7 +151,7 @@ function parseExpense(value: unknown): Expense | null {
     !categoryNames.has(category as Category) ||
     typeof candidate.note !== "string" ||
     typeof candidate.date !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}$/.test(candidate.date)
+    !validDate(candidate.date)
   ) return null;
 
   return {
@@ -146,6 +159,7 @@ function parseExpense(value: unknown): Expense | null {
     amount: candidate.amount,
     category: category as Category,
     note: candidate.note,
+    label: typeof candidate.label === "string" ? candidate.label.trim().slice(0, 40) : undefined,
     date: candidate.date,
   };
 }
@@ -160,7 +174,7 @@ function parseIncome(value: unknown): Income | null {
     candidate.amount <= 0 ||
     typeof candidate.source !== "string" ||
     typeof candidate.date !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}$/.test(candidate.date)
+    !validDate(candidate.date)
   ) return null;
 
   return {
@@ -168,6 +182,29 @@ function parseIncome(value: unknown): Income | null {
     amount: candidate.amount,
     source: candidate.source,
     date: candidate.date,
+  };
+}
+
+function parseRecurring(value: unknown): RecurringSchedule | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Partial<RecurringSchedule>;
+  if (
+    typeof item.id !== "string" || !item.id ||
+    (item.type !== "expense" && item.type !== "income") ||
+    !["daily", "weekly", "monthly", "yearly"].includes(item.frequency ?? "") ||
+    typeof item.startDate !== "string" || !validDate(item.startDate) ||
+    (item.activeFrom !== undefined && (typeof item.activeFrom !== "string" || !validDate(item.activeFrom))) ||
+    typeof item.paused !== "boolean" || !Array.isArray(item.skipDates) ||
+    item.skipDates.some((date) => typeof date !== "string" || !validDate(date)) ||
+    typeof item.amount !== "number" || !Number.isFinite(item.amount) || item.amount <= 0 ||
+    (item.type === "expense" && !categoryNames.has(item.category as Category))
+  ) return null;
+  return {
+    id: item.id, type: item.type, frequency: item.frequency as Frequency,
+    startDate: item.startDate, activeFrom: item.activeFrom, paused: item.paused,
+    skipDates: item.skipDates, amount: item.amount,
+    category: item.category, note: item.note ?? "", label: item.label,
+    source: item.source ?? "",
   };
 }
 
@@ -184,11 +221,15 @@ function loadSavedIncomes() {
 }
 
 function loadSavedExpenses() {
-  const keys = new Set<string>(["pocket-expenses", expenseStorageKey]);
-  for (let index = 0; index < localStorage.length; index += 1) {
-    const key = localStorage.key(index);
-    if (key && /^pocket-.+-expenses$/.test(key)) keys.add(key);
+  const keys = new Set<string>();
+  if (localStorage.getItem(expenseMigrationKey) !== "true") {
+    keys.add("pocket-expenses");
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key && /^pocket-.+-expenses$/.test(key)) keys.add(key);
+    }
   }
+  keys.add(expenseStorageKey);
 
   const byId = new Map<string, Expense>();
   for (const key of keys) {
@@ -208,6 +249,7 @@ function loadSavedExpenses() {
 
   const migrated = Array.from(byId.values());
   localStorage.setItem(expenseStorageKey, JSON.stringify(migrated));
+  localStorage.setItem(expenseMigrationKey, "true");
   return migrated;
 }
 
@@ -276,7 +318,7 @@ function parseMonthlyAmounts(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const parsed: Record<string, number> = {};
   for (const [month, amount] of Object.entries(value)) {
-    if (!/^\d{4}-\d{2}$/.test(month) || typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
       return null;
     }
     parsed[month] = amount;
@@ -289,7 +331,7 @@ function parseBackup(value: unknown): PocketBackup["data"] | null {
   const backup = value as Partial<PocketBackup>;
   if (
     backup.app !== "Pocket" ||
-    (backup.version !== 1 && backup.version !== 2 && backup.version !== 3 && backup.version !== 4) ||
+    (backup.version !== 1 && backup.version !== 2 && backup.version !== 3 && backup.version !== 4 && backup.version !== 5) ||
     !backup.data ||
     typeof backup.data !== "object"
   ) {
@@ -304,6 +346,10 @@ function parseBackup(value: unknown): PocketBackup["data"] | null {
   if (!Array.isArray(incomeValues)) return null;
   const incomes = incomeValues.map(parseIncome);
   if (incomes.some((income) => !income)) return null;
+  const recurringValues = data.recurring ?? [];
+  if (!Array.isArray(recurringValues)) return null;
+  const recurring = recurringValues.map(parseRecurring);
+  if (recurring.some((item) => !item)) return null;
   const savedTargets = parseMonthlyAmounts(data.targets);
   if (!savedTargets) return null;
   const hasOpeningBalances = data.openingBalances !== undefined;
@@ -323,6 +369,7 @@ function parseBackup(value: unknown): PocketBackup["data"] | null {
   return {
     expenses: expenses as Expense[],
     incomes: incomes as Income[],
+    recurring: recurring as RecurringSchedule[],
     targets,
     openingBalances: savedOpeningBalances,
     savingsTargets: savedSavingsTargets,
@@ -330,6 +377,12 @@ function parseBackup(value: unknown): PocketBackup["data"] | null {
     targetAlertsEnabled: data.targetAlertsEnabled,
     theme: data.theme,
   };
+}
+
+function backupDateRange(data: PocketBackup["data"]) {
+  const dates = [...data.expenses.map((item) => item.date), ...(data.incomes ?? []).map((item) => item.date)].sort();
+  if (!dates.length) return "No dated entries";
+  return dates[0] === dates.at(-1) ? dates[0] : `${dates[0]} to ${dates.at(-1)}`;
 }
 
 function WeeklyTrendChart({ values, theme }: { values: number[]; theme: Theme }) {
@@ -449,6 +502,7 @@ function WeeklyTrendChart({ values, theme }: { values: number[]; theme: Theme })
 export default function PocketDashboard() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [incomes, setIncomes] = useState<Income[]>([]);
+  const [recurring, setRecurring] = useState<RecurringSchedule[]>([]);
   const [targets, setTargets] = useState<Record<string, number>>({});
   const [openingBalances, setOpeningBalances] = useState<Record<string, number>>({});
   const [savingsTargets, setSavingsTargets] = useState<Record<string, number>>({});
@@ -458,6 +512,7 @@ export default function PocketDashboard() {
   const [source, setSource] = useState("");
   const [category, setCategory] = useState<Category>("Food");
   const [note, setNote] = useState("");
+  const [otherLabelDraft, setOtherLabelDraft] = useState("");
   const [date, setDate] = useState(today());
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetDraft, setTargetDraft] = useState("");
@@ -472,19 +527,29 @@ export default function PocketDashboard() {
   const [hydrated, setHydrated] = useState(false);
   const [theme, setTheme] = useState<Theme | null>(null);
   const [ledgerFilter, setLedgerFilter] = useState<LedgerFilter>("All");
+  const [otherFilter, setOtherFilter] = useState<string | null>(null);
+  const [ledgerSearch, setLedgerSearch] = useState("");
   const [activeView, setActiveView] = useState<AppView>("home");
   const [addingExpense, setAddingExpense] = useState(false);
+  const [editingEntry, setEditingEntry] = useState<{ type: EntryType; id: string } | null>(null);
   const [entryAdded, setEntryAdded] = useState<EntryType | null>(null);
+  const [repeatFrequency, setRepeatFrequency] = useState<Frequency | "none">("none");
+  const [deletedEntry, setDeletedEntry] = useState<{ type: EntryType; entry: Expense | Income } | null>(null);
+  const [storageError, setStorageError] = useState("");
+  const [databaseReady, setDatabaseReady] = useState(true);
+  const [clockDate, setClockDate] = useState(today());
   const [backupOpen, setBackupOpen] = useState(false);
   const [backupMessage, setBackupMessage] = useState("");
   const [backupError, setBackupError] = useState(false);
+  const [restorePreview, setRestorePreview] = useState<PocketBackup["data"] | null>(null);
   const [lastBackupAt, setLastBackupAt] = useState("");
   const backupFileRef = useRef<HTMLInputElement>(null);
+  const pendingSnapshotWrite = useRef<Promise<unknown>>(Promise.resolve());
 
   useEffect(() => {
+    const hydrate = async () => {
     try {
       // Client-only local storage is intentionally hydrated after the first render.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setExpenses(loadSavedExpenses());
       setIncomes(loadSavedIncomes());
       const savedTargets = loadSavedTargets();
@@ -518,10 +583,48 @@ export default function PocketDashboard() {
       const savedTheme = localStorage.getItem("pocket-theme") as Theme | null;
       setTheme(savedTheme ?? "dark");
       setLastBackupAt(localStorage.getItem(lastBackupStorageKey) ?? "");
+      const mirrorText = localStorage.getItem(snapshotStorageKey);
+      let chosenText: string | null = null;
+      let mirrorDate = "";
+      try {
+        if (mirrorText && parseBackup(JSON.parse(mirrorText))) {
+          chosenText = mirrorText;
+          mirrorDate = (JSON.parse(mirrorText) as PocketBackup).exportedAt;
+        }
+      } catch { /* An invalid recovery copy must not hide a valid database. */ }
+      if (Capacitor.isNativePlatform()) {
+        try {
+          const result = await NativeData.readSnapshot();
+          const databaseText = result.data;
+          if (databaseText) {
+            const database = JSON.parse(databaseText) as PocketBackup;
+            if (parseBackup(database) && (!chosenText || (database.exportedAt ?? "") > mirrorDate)) chosenText = databaseText;
+          }
+        } catch {
+          setDatabaseReady(false);
+          setStorageError("Local database is unavailable. Pocket is using its recovery copy; please save a backup.");
+        }
+      }
+      if (chosenText) {
+        const saved = parseBackup(JSON.parse(chosenText));
+        if (saved) {
+          setExpenses(saved.expenses);
+          setIncomes(saved.incomes ?? []);
+          setRecurring(saved.recurring ?? []);
+          setTargets(saved.targets);
+          setOpeningBalances(saved.openingBalances ?? {});
+          setSavingsTargets(saved.savingsTargets ?? {});
+          setOwnerName(saved.ownerName);
+          setTargetAlertsEnabled(saved.targetAlertsEnabled);
+          setTheme(saved.theme);
+        }
+      }
     } catch {
       setTheme("dark");
     }
     setHydrated(true);
+    };
+    void hydrate();
   }, []);
 
   useEffect(() => {
@@ -565,9 +668,63 @@ export default function PocketDashboard() {
   }, [hydrated, ownerName]);
 
   useEffect(() => {
+    if (!hydrated || !theme) return;
+    const snapshot: PocketBackup = {
+      app: "Pocket", version: 5, exportedAt: new Date().toISOString(),
+      data: { expenses, incomes, recurring, targets, openingBalances, savingsTargets, ownerName, targetAlertsEnabled, theme },
+    };
+    const data = JSON.stringify(snapshot);
+    try {
+      localStorage.setItem(snapshotStorageKey, data);
+    } catch {
+      // The native database remains the primary store on Android.
+    }
+    if (Capacitor.isNativePlatform() && databaseReady) {
+      pendingSnapshotWrite.current = pendingSnapshotWrite.current
+        .catch(() => undefined)
+        .then(() => NativeData.writeSnapshot({ data }))
+        .then(() => setStorageError(""))
+        .catch(() => setStorageError("Could not save to Pocket's local database. Export a backup before closing the app."));
+    }
+  }, [databaseReady, expenses, hydrated, incomes, openingBalances, ownerName, recurring, savingsTargets, targetAlertsEnabled, targets, theme]);
+
+  useEffect(() => {
+    const refresh = () => setClockDate(today());
+    document.addEventListener("visibilitychange", refresh);
+    const timer = window.setInterval(refresh, 60_000);
+    return () => { document.removeEventListener("visibilitychange", refresh); window.clearInterval(timer); };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const existingExpenseIds = new Set(expenses.map((entry) => entry.id));
+    const existingIncomeIds = new Set(incomes.map((entry) => entry.id));
+    const newExpenses: Expense[] = [];
+    const newIncomes: Income[] = [];
+    for (const schedule of recurring) {
+      for (const date of occurrencesThrough(schedule, clockDate)) {
+        const id = recurringEntryId(schedule.id, date);
+        if (schedule.type === "expense" && !existingExpenseIds.has(id)) {
+          newExpenses.push({ id, date, amount: schedule.amount, category: schedule.category as Category, note: schedule.note ?? "", label: schedule.label });
+          existingExpenseIds.add(id);
+        } else if (schedule.type === "income" && !existingIncomeIds.has(id)) {
+          newIncomes.push({ id, date, amount: schedule.amount, source: schedule.source ?? "" });
+          existingIncomeIds.add(id);
+        }
+      }
+    }
+    if (newExpenses.length || newIncomes.length) queueMicrotask(() => {
+      if (newExpenses.length) setExpenses((current) => [...current, ...newExpenses.filter((entry) => !current.some((old) => old.id === entry.id))]);
+      if (newIncomes.length) setIncomes((current) => [...current, ...newIncomes.filter((entry) => !current.some((old) => old.id === entry.id))]);
+    });
+  }, [clockDate, expenses, hydrated, incomes, recurring]);
+
+  useEffect(() => {
     // Changing month always starts the ledger on its complete, unfiltered view.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLedgerFilter("All");
+    setOtherFilter(null);
+    setLedgerSearch("");
   }, [selectedMonth]);
 
   const monthExpenses = useMemo(
@@ -722,11 +879,16 @@ export default function PocketDashboard() {
   );
 
   const ledgerExpenses = useMemo(
-    () => ledgerFilter === "All" ? monthExpenses : monthExpenses.filter((expense) => expense.category === ledgerFilter),
-    [ledgerFilter, monthExpenses],
+    () => filterExpenses(monthExpenses, ledgerFilter, otherFilter, ledgerSearch),
+    [ledgerFilter, ledgerSearch, monthExpenses, otherFilter],
   );
 
   const ledgerTotal = ledgerExpenses.reduce((total, expense) => total + expense.amount, 0);
+  const otherBreakdown = useMemo(() => summarizeOther(monthExpenses), [monthExpenses]);
+  const existingOtherLabels = useMemo(
+    () => [...new Set(expenses.filter((expense) => expense.category === "Other").map(otherLabel))].sort(),
+    [expenses],
+  );
 
   const expenseGroups = useMemo(() => {
     const groups: { date: string; total: number; expenses: Expense[] }[] = [];
@@ -745,31 +907,53 @@ export default function PocketDashboard() {
   function addEntry(event: FormEvent) {
     event.preventDefault();
     const parsedAmount = Number(amount);
-    if (!parsedAmount || parsedAmount <= 0) return;
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) return;
 
     const entryDate = date || today();
-    if (entryType === "income") {
-      setIncomes((current) => [...current, {
+    if (!editingEntry && repeatFrequency !== "none") {
+      const schedule: RecurringSchedule = {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        type: entryType, frequency: repeatFrequency, startDate: entryDate, paused: false,
+        skipDates: [], amount: parsedAmount,
+        category: entryType === "expense" ? category : undefined,
+        note: entryType === "expense" ? note.trim() : undefined,
+        label: entryType === "expense" && category === "Other" ? otherLabelDraft.trim().slice(0, 40) : undefined,
+        source: entryType === "income" ? source.trim() : undefined,
+      };
+      setRecurring((current) => [...current, schedule]);
+    } else if (entryType === "income") {
+      const entry: Income = {
+        id: editingEntry?.type === "income" ? editingEntry.id : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
         amount: parsedAmount,
         source: source.trim(),
         date: entryDate,
-      }]);
+      };
+      setIncomes((current) => editingEntry?.type === "income"
+        ? current.map((item) => item.id === editingEntry.id ? entry : item)
+        : [...current, entry]);
     } else {
-      setExpenses((current) => [...current, {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      const entry: Expense = {
+        id: editingEntry?.type === "expense" ? editingEntry.id : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
         amount: parsedAmount,
         category,
         note: note.trim(),
+        label: category === "Other" ? otherLabelDraft.trim().slice(0, 40) : undefined,
         date: entryDate,
-      }]);
+      };
+      setExpenses((current) => editingEntry?.type === "expense"
+        ? current.map((item) => item.id === editingEntry.id ? entry : item)
+        : [...current, entry]);
     }
     setSelectedMonth(entryDate.slice(0, 7));
     setAmount("");
     setNote("");
+    setOtherLabelDraft("");
     setSource("");
+    setEditingEntry(null);
+    setRepeatFrequency("none");
+    setDeletedEntry(null);
     setAddingExpense(false);
-    setEntryAdded(entryType);
+    setEntryAdded(editingEntry ? null : entryType);
     window.setTimeout(() => setEntryAdded(null), 2400);
   }
 
@@ -862,6 +1046,7 @@ export default function PocketDashboard() {
   function openBackup() {
     setBackupMessage("");
     setBackupError(false);
+    setRestorePreview(null);
     setBackupOpen(true);
   }
 
@@ -871,11 +1056,12 @@ export default function PocketDashboard() {
     const fileName = `pocket-backup-${today()}.json`;
     const backup: PocketBackup = {
       app: "Pocket",
-      version: 4,
+      version: 5,
       exportedAt,
       data: {
         expenses,
         incomes,
+        recurring,
         targets,
         openingBalances,
         savingsTargets,
@@ -918,6 +1104,59 @@ export default function PocketDashboard() {
     setBackupMessage(`Backup saved as ${fileName} with ${entryCount} ${entryCount === 1 ? "entry" : "entries"}.`);
   }
 
+  async function exportCsv() {
+    const data = buildCsv(expenses, incomes);
+    const fileName = `pocket-transactions-${today()}.csv`;
+    try {
+      if (Capacitor.isNativePlatform()) {
+        const result = await NativeBackup.saveBackup({ fileName, data, mimeType: "text/csv" });
+        if (!result.saved) return;
+      } else {
+        const url = URL.createObjectURL(new Blob([data], { type: "text/csv;charset=utf-8" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+      setBackupError(false);
+      setBackupMessage(`CSV saved as ${fileName}. JSON backup is still needed to restore Pocket.`);
+    } catch {
+      setBackupError(true);
+      setBackupMessage("Pocket could not save the CSV file. Choose another folder and try again.");
+    }
+  }
+
+  function previewBackup(text: string) {
+    try {
+      const parsed = parseBackup(JSON.parse(text));
+      if (!parsed) throw new Error("Invalid backup");
+      setRestorePreview(parsed);
+      setBackupError(false);
+      setBackupMessage("Review the backup below before replacing your current data.");
+    } catch {
+      setRestorePreview(null);
+      setBackupError(true);
+      setBackupMessage("That file is not a valid Pocket backup. No data was changed.");
+    }
+  }
+
+  async function chooseRestoreFile() {
+    if (!Capacitor.isNativePlatform()) {
+      backupFileRef.current?.click();
+      return;
+    }
+    try {
+      const result = await NativeBackup.openBackup();
+      if (result.data) previewBackup(result.data);
+    } catch {
+      setBackupError(true);
+      setBackupMessage("Pocket could not open that file. Choose a JSON backup and try again.");
+    }
+  }
+
   async function restoreBackup(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -929,17 +1168,20 @@ export default function PocketDashboard() {
       return;
     }
 
-    try {
-      const parsed = parseBackup(JSON.parse(await file.text()));
-      if (!parsed) throw new Error("Invalid backup");
-      const entryCount = parsed.expenses.length + (parsed.incomes?.length ?? 0);
-      const confirmed = window.confirm(
-        `Restore ${entryCount} ${entryCount === 1 ? "entry" : "entries"}? This will replace the Pocket data currently on this device.`,
-      );
-      if (!confirmed) return;
+    previewBackup(await file.text());
+  }
 
+  async function confirmRestore() {
+    if (!restorePreview) return;
+    const parsed = restorePreview;
+    const snapshot: PocketBackup = { app: "Pocket", version: 5, exportedAt: new Date().toISOString(), data: parsed };
+    try {
+      await pendingSnapshotWrite.current.catch(() => undefined);
+      if (Capacitor.isNativePlatform()) await NativeData.writeSnapshot({ data: JSON.stringify(snapshot) });
+      localStorage.setItem(snapshotStorageKey, JSON.stringify(snapshot));
       setExpenses(parsed.expenses);
       setIncomes(parsed.incomes ?? []);
+      setRecurring(parsed.recurring ?? []);
       setTargets(parsed.targets);
       setOpeningBalances(parsed.openingBalances ?? {});
       setSavingsTargets(parsed.savingsTargets ?? {});
@@ -949,11 +1191,13 @@ export default function PocketDashboard() {
       setTheme(parsed.theme);
       setSelectedMonth(monthKey());
       setLedgerFilter("All");
+      setRestorePreview(null);
       setBackupError(false);
+      const entryCount = parsed.expenses.length + (parsed.incomes?.length ?? 0);
       setBackupMessage(`Restore complete. ${entryCount} ${entryCount === 1 ? "entry is" : "entries are"} ready.`);
     } catch {
       setBackupError(true);
-      setBackupMessage("That file is not a valid Pocket backup. No data was changed.");
+      setBackupMessage("Restore could not be saved. Your existing entries were not changed.");
     }
   }
 
@@ -961,18 +1205,78 @@ export default function PocketDashboard() {
     const expense = expenses.find((item) => item.id === id);
     if (!expense || !window.confirm(`Delete ${expense.note || expense.category} for ${money.format(expense.amount)}?`)) return;
     setExpenses((current) => current.filter((expense) => expense.id !== id));
+    if (id.startsWith("recurring:")) {
+      const [, scheduleId, date] = id.split(":");
+      setRecurring((current) => current.map((item) => item.id === scheduleId
+        ? { ...item, skipDates: [...new Set([...item.skipDates, date])] } : item));
+    }
+    setDeletedEntry({ type: "expense", entry: expense });
   }
 
   function removeIncome(id: string) {
     const income = incomes.find((item) => item.id === id);
     if (!income || !window.confirm(`Delete ${income.source || "income"} for ${money.format(income.amount)}?`)) return;
     setIncomes((current) => current.filter((item) => item.id !== id));
+    if (id.startsWith("recurring:")) {
+      const [, scheduleId, date] = id.split(":");
+      setRecurring((current) => current.map((item) => item.id === scheduleId
+        ? { ...item, skipDates: [...new Set([...item.skipDates, date])] } : item));
+    }
+    setDeletedEntry({ type: "income", entry: income });
   }
+
+  function undoDelete() {
+    if (!deletedEntry) return;
+    if (deletedEntry.type === "expense") {
+      const entry = deletedEntry.entry as Expense;
+      setExpenses((current) => current.some((item) => item.id === entry.id) ? current : [...current, entry]);
+    } else {
+      const entry = deletedEntry.entry as Income;
+      setIncomes((current) => current.some((item) => item.id === entry.id) ? current : [...current, entry]);
+    }
+    if (deletedEntry.entry.id.startsWith("recurring:")) {
+      const [, scheduleId, date] = deletedEntry.entry.id.split(":");
+      setRecurring((current) => current.map((item) => item.id === scheduleId
+        ? { ...item, skipDates: item.skipDates.filter((skipped) => skipped !== date) } : item));
+    }
+    setDeletedEntry(null);
+  }
+
+  function toggleRecurring(id: string) {
+    setRecurring((current) => current.map((item) => item.id === id
+      ? { ...item, paused: !item.paused, activeFrom: item.paused ? today() : item.activeFrom }
+      : item));
+  }
+
+  function skipNextRecurring(id: string) {
+    setRecurring((current) => current.map((item) => {
+      if (item.id !== id) return item;
+      const next = nextOccurrence(item, today());
+      return next ? { ...item, skipDates: [...new Set([...item.skipDates, next])] } : item;
+    }));
+  }
+
+  function stopRecurring(id: string) {
+    if (!window.confirm("Stop this repeating entry? Entries already recorded will stay in your ledger.")) return;
+    setRecurring((current) => current.filter((item) => item.id !== id));
+  }
+
+  useEffect(() => {
+    if (!deletedEntry) return;
+    const timer = window.setTimeout(() => setDeletedEntry(null), 10000);
+    return () => window.clearTimeout(timer);
+  }, [deletedEntry]);
 
   function selectCategory(filter: LedgerFilter) {
     setLedgerFilter(filter);
+    setOtherFilter(null);
     setActiveView("transactions");
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function changeLedgerFilter(filter: LedgerFilter) {
+    setLedgerFilter(filter);
+    setOtherFilter(null);
   }
 
   function changeView(view: AppView) {
@@ -981,12 +1285,50 @@ export default function PocketDashboard() {
   }
 
   function openAddExpense() {
+    setEditingEntry(null);
+    setRepeatFrequency("none");
     setEntryType("expense");
     setAmount("");
     setNote("");
+    setOtherLabelDraft("");
     setSource("");
+    setCategory("Food");
     setDate(selectedMonth === monthKey() ? today() : `${selectedMonth}-01`);
     setAddingExpense(true);
+  }
+
+  function openEditExpense(expense: Expense) {
+    setEditingEntry({ type: "expense", id: expense.id });
+    setRepeatFrequency("none");
+    setEntryType("expense");
+    setAmount(String(expense.amount));
+    setCategory(expense.category);
+    setNote(expense.note);
+    setOtherLabelDraft(expense.label ?? "");
+    setDate(expense.date);
+    setAddingExpense(true);
+  }
+
+  function openEditIncome(income: Income) {
+    setEditingEntry({ type: "income", id: income.id });
+    setRepeatFrequency("none");
+    setEntryType("income");
+    setAmount(String(income.amount));
+    setSource(income.source);
+    setDate(income.date);
+    setAddingExpense(true);
+  }
+
+  function openDuplicateExpense(expense: Expense) {
+    openEditExpense(expense);
+    setEditingEntry(null);
+    setDate(selectedMonth === monthKey() ? today() : `${selectedMonth}-01`);
+  }
+
+  function openDuplicateIncome(income: Income) {
+    openEditIncome(income);
+    setEditingEntry(null);
+    setDate(selectedMonth === monthKey() ? today() : `${selectedMonth}-01`);
   }
 
   const activeTheme = theme ?? "dark";
@@ -1223,7 +1565,11 @@ export default function PocketDashboard() {
                       <span>{expenseDateLabel(income.date)} · Income</span>
                     </div>
                     <strong className="income-amount">+{money.format(income.amount)}</strong>
-                    <button className="delete-button" type="button" onClick={() => removeIncome(income.id)} aria-label={`Delete ${income.source || "income"}`}>×</button>
+                    <div className="row-actions">
+                      <button className="row-edit-button" type="button" onClick={() => openEditIncome(income)} aria-label={`Edit ${income.source || "income"}`}>Edit</button>
+                      <button className="row-edit-button" type="button" onClick={() => openDuplicateIncome(income)} aria-label={`Duplicate ${income.source || "income"}`}>Copy</button>
+                      <button className="delete-button" type="button" onClick={() => removeIncome(income.id)} aria-label={`Delete ${income.source || "income"}`}>×</button>
+                    </div>
                   </article>
                 ))}
               </div>
@@ -1241,13 +1587,33 @@ export default function PocketDashboard() {
           </div>
 
           <div className="expense-filters" aria-label="Filter monthly expenses">
-            <button type="button" className={ledgerFilter === "All" ? "active" : ""} onClick={() => setLedgerFilter("All")}>All</button>
+            <button type="button" className={ledgerFilter === "All" ? "active" : ""} onClick={() => changeLedgerFilter("All")}>All</button>
             {categories.map((item) => (
-              <button key={item.name} type="button" className={ledgerFilter === item.name ? "active" : ""} onClick={() => setLedgerFilter(item.name)}>
+              <button key={item.name} type="button" className={ledgerFilter === item.name ? "active" : ""} onClick={() => changeLedgerFilter(item.name)}>
                 {item.icon} {item.name}
               </button>
             ))}
           </div>
+          <label className="ledger-search">
+            <span>Search transactions</span>
+            <input type="search" value={ledgerSearch} onChange={(event) => setLedgerSearch(event.target.value)} placeholder="Search a name, note or label" />
+          </label>
+          {ledgerFilter === "Other" && otherBreakdown.length > 0 && (
+            <section className="other-breakdown" aria-label="Other spending by name">
+              <div className="other-breakdown-heading">
+                <strong>What makes up Other</strong>
+                <span>Tap a name to see its transactions</span>
+              </div>
+              <div className="other-label-filters">
+                <button type="button" className={!otherFilter ? "active" : ""} onClick={() => setOtherFilter(null)}>All Other</button>
+                {otherBreakdown.map(([key, item]) => (
+                  <button key={key} type="button" className={otherFilter === key ? "active" : ""} onClick={() => setOtherFilter(key)} aria-pressed={otherFilter === key}>
+                    <span>{item.name}</span><strong>{money.format(item.total)}</strong><small>{item.count} {item.count === 1 ? "entry" : "entries"}</small>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
 
           {expenseGroups.length ? (
             <div className="expense-groups">
@@ -1265,10 +1631,14 @@ export default function PocketDashboard() {
                           <span className="expense-icon" style={{ background: `${item.color}22` }}>{item.icon}</span>
                           <div className="expense-copy">
                             <strong>{expense.note || expense.category}</strong>
-                            <span>{expenseDateLabel(expense.date)} · {expense.category}</span>
+                            <span>{expenseDateLabel(expense.date)} · {expense.category}{expense.category === "Other" && expense.label ? ` · ${expense.label}` : ""}</span>
                           </div>
                           <strong className="expense-amount">−{money.format(expense.amount)}</strong>
-                          <button className="delete-button" type="button" onClick={() => removeExpense(expense.id)} aria-label={`Delete ${expense.note || expense.category} expense`}>×</button>
+                          <div className="row-actions">
+                            <button className="row-edit-button" type="button" onClick={() => openEditExpense(expense)} aria-label={`Edit ${expense.note || expense.category} expense`}>Edit</button>
+                            <button className="row-edit-button" type="button" onClick={() => openDuplicateExpense(expense)} aria-label={`Duplicate ${expense.note || expense.category} expense`}>Copy</button>
+                            <button className="delete-button" type="button" onClick={() => removeExpense(expense.id)} aria-label={`Delete ${expense.note || expense.category} expense`}>×</button>
+                          </div>
                         </article>
                       );
                     })}
@@ -1278,7 +1648,7 @@ export default function PocketDashboard() {
               {ledgerExpenses.length > 8 && <button className="back-to-top" type="button" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>Back to top</button>}
             </div>
           ) : (
-            <div className="empty-state"><span aria-hidden="true">◎</span><strong>No expenses here</strong><p>Add an expense or choose another category.</p></div>
+            <div className="empty-state"><span aria-hidden="true">◎</span><strong>No expenses here</strong><p>Try another name or category.</p></div>
           )}
         </section>
       )}
@@ -1462,9 +1832,27 @@ export default function PocketDashboard() {
               </div>
               <button className="settings-action" type="button" onClick={openBackup}>Open backup tools <span aria-hidden="true">{"\u203a"}</span></button>
             </article>
+
+            <article className="panel settings-card settings-card-wide">
+              <div className="settings-card-heading">
+                <span className="settings-card-icon" aria-hidden="true">↻</span>
+                <div><p className="eyebrow">Automatic entries</p><h2>Repeating transactions</h2></div>
+              </div>
+              {recurring.length ? recurring.map((item) => (
+                <div className="recurring-row" key={item.id}>
+                  <div><strong>{item.type === "income" ? item.source || "Income" : item.label || item.note || item.category}</strong>
+                    <span>{money.format(item.amount)} · {item.frequency} · {item.paused ? "Paused" : `Next ${nextOccurrence(item, today()) ?? "—"}`}</span></div>
+                  <div className="recurring-actions">
+                    <button type="button" onClick={() => toggleRecurring(item.id)}>{item.paused ? "Resume" : "Pause"}</button>
+                    {!item.paused && <button type="button" onClick={() => skipNextRecurring(item.id)}>Skip next</button>}
+                    <button type="button" onClick={() => stopRecurring(item.id)}>Stop</button>
+                  </div>
+                </div>
+              )) : <p className="recurring-empty">Choose “Repeat automatically” when adding an expense or income.</p>}
+            </article>
           </div>
 
-          <p className="settings-version">Pocket Expense &middot; Phase 1 professional interface</p>
+          <p className="settings-version">Pocket &middot; Version 1.2.0</p>
         </section>
       )}
 
@@ -1488,19 +1876,24 @@ export default function PocketDashboard() {
           {entryAdded === "income" ? "Income" : "Expense"} added successfully
         </div>
       )}
+      {deletedEntry && (
+        <div className="app-toast undo-toast" role="status" aria-live="polite">
+          Transaction deleted <button type="button" onClick={undoDelete}>Undo</button>
+        </div>
+      )}
 
       {addingExpense && (
         <div className="modal-backdrop add-expense-backdrop" role="presentation" onMouseDown={() => setAddingExpense(false)}>
           <form className="target-modal add-expense-modal" onSubmit={addEntry} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="new-expense-title">
             <button className="modal-close" type="button" onClick={() => setAddingExpense(false)} aria-label="Close">{"\u00d7"}</button>
-            <p className="eyebrow">Quick entry</p>
-            <h2 id="new-expense-title">Add {entryType}</h2>
-            <p className="modal-description">{entryType === "expense" ? "Record what you spent and Pocket will update this month automatically." : "Record money you received. It will increase your available balance."}</p>
+            <p className="eyebrow">{editingEntry ? "Transaction details" : "Quick entry"}</p>
+            <h2 id="new-expense-title">{editingEntry ? "Edit" : "Add"} {entryType}</h2>
+            <p className="modal-description">{editingEntry ? "Update the details below. Your monthly totals will recalculate automatically." : entryType === "expense" ? "Record what you spent and Pocket will update this month automatically." : "Record money you received. It will increase your available balance."}</p>
 
-            <div className="entry-type-toggle" role="group" aria-label="Entry type">
+            {!editingEntry && <div className="entry-type-toggle" role="group" aria-label="Entry type">
               <button type="button" className={entryType === "expense" ? "active" : ""} onClick={() => setEntryType("expense")}>Expense</button>
               <button type="button" className={entryType === "income" ? "active income-active" : ""} onClick={() => setEntryType("income")}>Income</button>
-            </div>
+            </div>}
 
             <label className="expense-amount-field">
               <span>Amount</span>
@@ -1526,11 +1919,27 @@ export default function PocketDashboard() {
               </label>
             )}
 
+            {entryType === "expense" && category === "Other" && (
+              <label className="other-label-field">
+                <span>Name within Other (optional)</span>
+                <input value={otherLabelDraft} onChange={(event) => setOtherLabelDraft(event.target.value)} list="other-label-suggestions" maxLength={40} placeholder="e.g. SIP, Gifts, Home" />
+                <small>Use the same name to see its combined total in Other.</small>
+                <datalist id="other-label-suggestions">{existingOtherLabels.map((label) => <option key={label} value={label} />)}</datalist>
+              </label>
+            )}
             <div className="details-row modal-details-row">
               {entryType === "expense" && <label><span>Note</span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="What was it for?" aria-label="Expense note" /></label>}
               <label><span>Date</span><input value={date} onChange={(event) => setDate(event.target.value)} type="date" aria-label="Expense date" required /></label>
             </div>
-            <button className="primary-button" type="submit">Save {entryType}</button>
+            {!editingEntry && <label className="repeat-field">
+              <span>Repeat automatically</span>
+              <select value={repeatFrequency} onChange={(event) => setRepeatFrequency(event.target.value as Frequency | "none")}>
+                <option value="none">Never</option><option value="daily">Every day</option><option value="weekly">Every week</option>
+                <option value="monthly">Every month</option><option value="yearly">Every year</option>
+              </select>
+              {repeatFrequency !== "none" && <small>Pocket will add this entry on its scheduled date when you open the app.</small>}
+            </label>}
+            <button className="primary-button" type="submit">{editingEntry ? "Save changes" : `Save ${entryType}`}</button>
           </form>
         </div>
       )}
@@ -1563,11 +1972,22 @@ export default function PocketDashboard() {
             </div>
 
             <button className="primary-button backup-primary" type="button" onClick={exportBackup}>Download backup</button>
-            <button className="secondary-button" type="button" onClick={() => backupFileRef.current?.click()}>Restore from backup</button>
+            <button className="secondary-button" type="button" onClick={exportCsv}>Export transactions as CSV</button>
+            <button className="secondary-button" type="button" onClick={chooseRestoreFile}>Restore from backup</button>
             <input className="backup-file-input" ref={backupFileRef} type="file" accept="application/json,.json" onChange={restoreBackup} tabIndex={-1} aria-hidden="true" />
+            {restorePreview && <div className="restore-preview">
+              <strong>Restore preview</strong>
+              <span>{restorePreview.expenses.length} expenses · {restorePreview.incomes?.length ?? 0} incomes · {restorePreview.recurring?.length ?? 0} repeating plans</span>
+              <span>Entry dates: {backupDateRange(restorePreview)}</span>
+              <span>{new Set([...Object.keys(restorePreview.openingBalances ?? {}), ...Object.keys(restorePreview.targets)]).size} monthly plans</span>
+              <p>This replaces the current data on this device. Save a backup of your current data first if you need it.</p>
+              <button className="primary-button" type="button" onClick={confirmRestore}>Replace with this backup</button>
+              <button className="secondary-button" type="button" onClick={() => setRestorePreview(null)}>Cancel</button>
+            </div>}
             <p className={backupError ? "backup-status backup-status-error" : "backup-status"} role="status" aria-live="polite">
               {backupMessage || "Keep this file somewhere safe, such as Google Drive or your computer."}
             </p>
+            {storageError && <p className="backup-status backup-status-error" role="alert">{storageError}</p>}
           </section>
         </div>
       )}
